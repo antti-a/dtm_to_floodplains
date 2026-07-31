@@ -1,4 +1,4 @@
-# dtm to Floodplains — Geomorphic floodplains from digital terrain model
+# dtm to floodplains — Geomorphic floodplains from digital terrain model
 
 The pipeline produces rasters of geomorphic floodplains (GFPLAIN; Nardi et al., 2019) and height
 above nearest drain (HAND; Nobre et al., 2016) directly from Finland's
