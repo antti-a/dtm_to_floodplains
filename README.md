@@ -1,4 +1,4 @@
-# DTM to Floodplains — Geomorphic floodplains from digital terrain model
+# dtm to Floodplains — Geomorphic floodplains from digital terrain model
 
 The pipeline produces rasters of geomorphic floodplains (GFPLAIN; Nardi et al., 2019) and height
 above nearest drain (HAND; Nobre et al., 2016) directly from Finland's
@@ -20,8 +20,8 @@ with different parameters. The three unnumbered files are companion modules
 ## Quick start
 
 ```bash
-git clone https://github.com/antti-a/DTM_to_Floodplains.git
-cd DTM_to_Floodplains
+git clone https://github.com/antti-a/dtm_to_floodplains.git
+cd dtm_to_floodplains
 conda env create -f environment.yml
 conda activate water
 # drop your DTM tiles (GeoTIFF) into data/00_source_dems/
