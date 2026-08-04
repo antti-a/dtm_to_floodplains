@@ -55,7 +55,7 @@ NODATA = -9999.0        # DEM nodata in stages 1-3, reused for hand.tif
 # Minimum upstream (contributing) area that defines a stream, in km2: the
 # default of the --upa-min flag in stages 3, 5 and 6. Edit it here once, or
 # override a run with --upa-min (00_run_pipeline.py forwards it to all three).
-UPA_MIN = 0.2
+UPA_MIN = 2.0
 
 # pyflwdir's uint8 D8 convention (pyflwdir.core_d8): the direction codes are
 # the same ESRI codes 03_flow_router.py writes; only the specials differ.

@@ -77,7 +77,7 @@ def main(argv=None) -> int:
                     help="minimum contributing area defining a stream, "
                          "forwarded to route, hand and floodplains "
                          "(default: the shared UPA_MIN in pipeline_io.py, "
-                         "0.2)")
+                         "2.0)")
     args = ap.parse_args(argv)
 
     if args.only:

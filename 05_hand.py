@@ -73,7 +73,7 @@ Credits
 Usage (inside the ``water`` conda environment, ``conda activate water``)
 -----
     python 05_hand.py                     # defaults from USER SETTINGS below
-    python 05_hand.py --upa-min 0.5       # coarser stream network
+    python 05_hand.py --upa-min 5.0       # coarser stream network
     python 05_hand.py --d8 other/fdir.tif --uparea other/acc.tif
 """
 

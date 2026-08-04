@@ -55,15 +55,15 @@ only parametrized step. `a` sets the overall magnitude of `h`; `b` sets how fast
 For example:
 
 ```bash
-python 06_floodplains.py --a 0.5 --b 0.35
+python 06_floodplains.py --a 0.2 --b 0.3
 ```
 
 Denser or sparser stream network for HAND and the floodplains: Lower
 or raise the stream-initiation threshold (km² of upstream area):
 
 ```bash
-python 05_hand.py --upa-min 0.1
-python 06_floodplains.py --upa-min 0.1
+python 05_hand.py --upa-min 1.0
+python 06_floodplains.py --upa-min 1.0
 ```
 
 Compare D8, MFD, Dinf and MDinf flow routing algorithms (not needed for
@@ -81,12 +81,12 @@ python 03_flow_router.py --fdir all
 |script|flag|meaning (default)|
 |-|-|-|
 |`00_run_pipeline.py`|`--from`, `--only`, `--skip`|which stages to run|
-|`00_run_pipeline.py`|`--upa-min KM2`|minimum contributing area defining a stream in km² (0.2)|
-|`03_flow_router.py`|`--upa-min KM2`|minimum contributing area defining a stream in km² (0.2)|
+|`00_run_pipeline.py`|`--upa-min KM2`|minimum contributing area defining a stream in km² (2.0)|
+|`03_flow_router.py`|`--upa-min KM2`|minimum contributing area defining a stream in km² (2.0)|
 |`03_flow_router.py`|`--fdir d8 mfd dinf mdinf` / `all`|which routing algorithms to run (d8)|
 |`04_flow_accumulation.py`|`--units m2/pixel`|accumulation in square metres or pixel counts (m2)|
-|`05_hand.py`, `06_floodplains.py`|`--upa-min KM2`|minimum contributing area defining a stream in km² (0.2)|
-|`06_floodplains.py`|`--a`, `--b`|GFPLAIN power law `h = a·A^b` (0.63, 0.3)|
+|`05_hand.py`, `06_floodplains.py`|`--upa-min KM2`|minimum contributing area defining a stream in km² (2.0)|
+|`06_floodplains.py`|`--a`, `--b`|GFPLAIN power law `h = a·A^b` (0.1, 0.3)|
 
 `python <script> --help` lists everything, including flags that repoint the
 input and output locations. Stages 1–2 are configured by the constants at

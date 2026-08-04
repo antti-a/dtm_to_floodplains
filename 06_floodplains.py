@@ -103,7 +103,7 @@ UPAREA_RASTER = "data/04_accumulation/flow_accumulation_d8.tif"
 # GFPLAIN power law h = a * A**b (h in m, A in km2): calibrate `a` (and, if
 # needed, `b`) against observed/modelled flood extents; the literature value
 # b ~ 0.30 (Nardi et al., 2019) is fixed first, then `a` fitted.
-GFPLAIN_A = 0.63        # coefficient a [-]
+GFPLAIN_A = 0.1         # coefficient a [-]
 FLOODPLAIN_B = 0.3      # exponent b [-]
 
 # ========================== end of USER SETTINGS ===========================
