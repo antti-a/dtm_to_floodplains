@@ -19,18 +19,24 @@ in the right order and stops at the first failure.
                                                data/03_flows +
                                                data/04_accumulation
     floodplains   06_floodplains.py            (same as hand)       data/06_floodplains
+    classify      07_classify.py               data/06_floodplains  data/07_classified
+                                               + data/04_accumulation
+                                               + data/01_carved
+                                               + data/02_filled
 
 USAGE (inside the ``water`` conda environment)
     python 00_run_pipeline.py                     # carve -> fill -> route
                                                #   -> accumulation -> hand
-                                               #   -> floodplains
+                                               #   -> floodplains -> classify
     python 00_run_pipeline.py --from route        # resume after an earlier run
     python 00_run_pipeline.py --only fill route   # just these stages
     python 00_run_pipeline.py --skip hand         # everything else
     python 00_run_pipeline.py --upa-min 0.5       # stream threshold, km2,
                                                #   forwarded to route, hand
                                                #   and floodplains (default:
-                                               #   UPA_MIN in pipeline_io.py)
+                                               #   UPA_MIN in pipeline_io.py;
+                                               #   classify reads it from the
+                                               #   stage-6 raster's tags)
 """
 
 from __future__ import annotations
@@ -44,14 +50,17 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 
 # Pipeline order.
-STAGES = ("carve", "fill", "route", "accumulation", "hand", "floodplains")
+STAGES = ("carve", "fill", "route", "accumulation", "hand", "floodplains",
+          "classify")
 
 
 def stage_commands(args) -> dict[str, list[str]]:
     py = sys.executable
-    # Stages 3, 5 and 6 share one stream threshold (UPA_MIN in pipeline_io.py);
-    # only an explicit --upa-min is forwarded, so a no-flag pipeline run equals
-    # no-flag standalone runs.
+    # Stages 3, 5 and 6 share one stream threshold (UPA_MIN in
+    # pipeline_io.py); only an explicit --upa-min is forwarded, so a no-flag
+    # pipeline run equals no-flag standalone runs. Stage 7 takes no
+    # threshold flag - it reads the stage-6 raster's stream_threshold_km2
+    # tag instead.
     upa = [] if args.upa_min is None else ["--upa-min", str(args.upa_min)]
     return {
         "carve": [py, str(HERE / "01_carve_dem.py")],
@@ -60,6 +69,7 @@ def stage_commands(args) -> dict[str, list[str]]:
         "accumulation": [py, str(HERE / "04_flow_accumulation.py")],
         "hand": [py, str(HERE / "05_hand.py"), *upa],
         "floodplains": [py, str(HERE / "06_floodplains.py"), *upa],
+        "classify": [py, str(HERE / "07_classify.py")],
     }
 
 
@@ -77,7 +87,8 @@ def main(argv=None) -> int:
                     help="minimum contributing area defining a stream, "
                          "forwarded to route, hand and floodplains "
                          "(default: the shared UPA_MIN in pipeline_io.py, "
-                         "2.0)")
+                         "2.0; classify reads the threshold from the "
+                         "stage-6 raster's tags)")
     args = ap.parse_args(argv)
 
     if args.only:
