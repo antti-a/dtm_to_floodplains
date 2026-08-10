@@ -21,8 +21,8 @@ in the right order and stops at the first failure.
     floodplains   06_floodplains.py            (same as hand)       data/06_floodplains
     classify      07_classify.py               data/06_floodplains  data/07_classified
                                                + data/04_accumulation
+                                               + data/03_flows
                                                + data/01_carved
-                                               + data/02_filled
 
 USAGE (inside the ``water`` conda environment)
     python 00_run_pipeline.py                     # carve -> fill -> route

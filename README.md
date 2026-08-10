@@ -31,8 +31,9 @@ python 00\_run\_pipeline.py
 The result is `data/06\_floodplains/floodplains.tif` (1 = floodplain,
 0 = upland) plus every intermediate product.
 Stage 7 additionally writes `data/07\_classified/floodplains\_classified.tif`
-(0 = upland, 1 = low-fill floodplain in stream contact, 2/3 = floodplain
-without such contact, split by distance at `--dmax`).
+(0 = dry land, 1 = potential floodplain/basin, 2 = blob, 3 = lake and
+its shores) and `data/07\_classified/floodplains\_clean.tif` (class 1
+alone as 1/0/−1: the floodplain minus lakes, shores and blobs).
 
 ## Running the pipeline
 
@@ -92,8 +93,8 @@ python 03\_flow\_router.py --fdir all
 |`05\_hand.py`, `06\_floodplains.py`|`--upa-min KM2`|minimum contributing area defining a stream in km² (2.0)|
 |`06\_floodplains.py`|`--a`, `--b`|GFPLAIN power law `h = a·A^b` (0.1, 0.3)|
 |`07\_classify.py`|`--radius PX`|opening disc radius in pixels; severs floodplain connections narrower than \~2·radius (3)|
-|`07\_classify.py`|`--dmax M`|distance to the nearest low-fill stream pixel splitting class 2 from class 3, in metres (100)|
-|`07\_classify.py`|`--fill-split M`|class-1/2 boundary in metres of fill depth (filled − carved DTM); only ground below it can carry stream contact; `inf` treats all ground as low-fill (1.0)|
+|`07\_classify.py`|`--dmax M`|distance to the nearest stream pixel splitting class 1 from class 2, in metres (100)|
+|`07\_classify.py`|`--lake-min-ha HA`|minimum area of a constant-elevation (hydro-flattened) water surface to classify as lake, in hectares; 0 disables (1)|
 
 `python <script> --help` lists everything, including flags that repoint the
 input and output locations. Stages 1–2 are configured by the constants at
@@ -110,7 +111,7 @@ values are simply the defaults a no-argument run uses.
 |4|`04\_flow\_accumulation.py`|`data/03\_flows/flow\_direction\_\*.tif`|`data/04\_accumulation/`|
 |5|`05\_hand.py`|`data/02\_filled/` + `data/03\_flows/flow\_direction\_d8.tif` + `data/04\_accumulation/flow\_accumulation\_d8.tif`|`data/05\_hand/`|
 |6|`06\_floodplains.py`|same as stage 5|`data/06\_floodplains/`|
-|7|`07\_classify.py`|`data/06\_floodplains/floodplains.tif` + `data/04\_accumulation/flow\_accumulation\_d8.tif` + `data/01\_carved/` + `data/02\_filled/`|`data/07\_classified/`|
+|7|`07\_classify.py`|`data/06\_floodplains/floodplains.tif` + `data/04\_accumulation/flow\_accumulation\_d8.tif` + `data/03\_flows/flow\_direction\_d8.tif` + `data/01\_carved/`|`data/07\_classified/`|
 
 1. **Carve** — lowers the DTM at culverts and road crossings with the SYKE
 "Tierumpujen uomakorjaus" WCS layer so flow crosses embankments.
@@ -133,14 +134,19 @@ with streams defined by the `--upa-min` threshold.
 carries a flood level `h = a·A^b` (h in m, A = upstream area in km²):
 A ground pixel belongs to the floodplain of a stream pixel it drains to if it
 rises no more than `h` metres above it.
-7. **Classify** — classifies the floodplain raster by what the stage-2
-conditioning did: fill depth (filled − carved DTM) and contact with the
-stream network through low-fill ground. A morphological opening (disc of
-`--radius` pixels) severs narrow connections; class 1 is floodplain with
-fill depth below `--fill-split` metres in contact with the network, and
-the remaining floodplain is split into classes 2 and 3 by distance to the
-nearest low-fill stream pixel at `--dmax` metres. The stream threshold is
-read from the stage-6 raster's tags.
+7. **Classify** — cleans the floodplain raster into three classes: a
+morphological opening (disc of `--radius` pixels) severs connections
+narrower than \~2·radius; floodplain keeping stream contact, or within
+`--dmax` metres of a stream pixel, is class 1 (potential
+floodplain/basin) and farther floodplain is class 2 (blob); connected
+regions of constant carved elevation of at least `--lake-min-ha`
+hectares — KM2 hydro-flattens water surfaces, so nothing else is that
+flat — are class 3 (lake), together with the shore floodplain whose
+controlling stream pixel (first stream pixel downstream along D8) lies
+inside a lake, so classes 1 and 2 describe river floodplain only. The
+stream threshold is read from the stage-6 raster's tags. A second
+raster, `floodplains\_clean.tif`, carries class 1 alone in the stage-6
+binary encoding (1/0/−1).
 
 ## Outputs and metadata
 

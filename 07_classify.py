@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Classify the stage-6 floodplains by fill depth and stream contact.
+"""Classify the stage-6 floodplains: floodplain/basin, blobs and lakes.
 
 Created on Fri Aug 7 2026
 @author: Antti Ahokas
@@ -8,82 +8,99 @@ Written with Claude Code (Anthropic).
 Pipeline stage 7 (see README.md):
     reads   data/06_floodplains/floodplains.tif             (06_floodplains.py)
             data/04_accumulation/flow_accumulation_d8.tif   (04_flow_accumulation.py)
+            data/03_flows/flow_direction_d8.tif             (03_flow_router.py)
             data/01_carved/*.tif                            (01_carve_dem.py)
-            data/02_filled/*.tif                            (02_fill_dem.py)
     writes  data/07_classified/floodplains_classified.tif
+            data/07_classified/floodplains_clean.tif
 
-Stage 2's depression filling raises every closed basin to its pour point,
-which connects every low area to the stream network - often only through
-a narrow spill route. This stage classifies the stage-6 floodplain by two
-measurements of what that conditioning did: fill depth (filled - carved
-DEM, i.e. how much the ground was raised) and contact with the stream
-network through low-fill ground. It makes no claim about which floodplain
-is genuine - the classes report terrain measurements to be checked
-against ground truth. Unlike stages 1-6, which reproduce published
-methods, this classification is the author's own method.
+Stage 2's depression filling connects every low area to the stream
+network, often only through a narrow spill route, and stage 6 then marks
+the route and the area as floodplain. This stage cleans that mask up:
+floodplain that has (or nearly has) stream contact, floodplain too far
+from any channel to matter, and open water. Unlike stages 1-6, which
+reproduce published methods, this classification is the author's own
+method.
 
 Method
 ------
-Let fp = (floodplains == 1), stream = (upstream area >= the
+Let fp = (floodplains == 1) and stream = (upstream area >= the
 stream_threshold_km2 tag of the floodplain raster, so the classes are
-always read against the network the floodplains were built with), and
-low = (fill depth < --fill-split metres), all restricted to the valid
-pixels of the floodplain raster.
+always read against the network the floodplains were built with), both
+restricted to the valid pixels of the floodplain raster.
 
-1. A binary opening (disc of --radius pixels) of fp & low severs
-   connections narrower than ~2*radius pixels; high-fill ground is
-   excluded from the start.
-2. Opened components (8-connectivity) that touch a low-fill stream pixel
-   are kept; low-fill stream pixels are added back (streams are
-   floodplain by definition in stage 6), and the rim the opening shaved
-   off is restored by exactly `radius` geodesic dilations within
-   fp & low (full reconstruction would regrow through the severed
-   connections). The result is class 1.
-3. Every other floodplain pixel is classified per 8-connected component
-   by its minimum Euclidean distance to a low-fill stream pixel:
-   <= --dmax metres -> class 2, farther -> class 3.
+1. A binary opening (disc of --radius pixels) of fp severs connections
+   narrower than ~2*radius pixels. Opened components (8-connectivity)
+   that touch a stream pixel are kept; stream pixels are added back
+   (streams are floodplain by definition in stage 6), and the rim the
+   opening shaved off is restored by exactly `radius` geodesic dilations
+   within fp (full reconstruction would regrow through the severed
+   connections).
+2. Kept floodplain, plus every severed component within --dmax metres of
+   a stream pixel (minimum Euclidean distance per component), is class 1.
+   Severed components farther away are class 2 (blobs).
+3. Lakes: KM2 hydro-flattens each water body to one constant elevation,
+   so open water is a connected region of bit-exact equal values in the
+   carved DEM - nothing natural is that flat at centimetre quantization.
+   Interior pixels (3x3 min == max) seed the mask, two value-matched
+   dilations recover the one-pixel rim and reunite bodies split at
+   narrows, and components of at least --lake-min-ha hectares (default
+   1 ha, the Finnish convention separating a lake from a pond) become
+   class 3.
+4. Lake shores: a floodplain pixel inherited its stage-6 flood level
+   from its controlling stream pixel - the first stream pixel downstream
+   along the D8 paths. Where that pixel lies inside a lake, the
+   floodplain exists because of the lake, not a river, so it joins
+   class 3 (found with the stage-3 D8 raster and the same pyflwdir flow
+   graph stages 5-6 use). River floodplain at a lake's inlet and outlet
+   keeps its class - its controlling stream pixels are river pixels.
+   Classes 1 and 2 therefore describe river floodplain only; class 3 is
+   stamped last, over any class.
 
 Holes are never filled - they are real islands. The morphological
 operators are standard mathematical morphology (Soille, 2004 -
-``MORPHOLOGY_CITATION`` below). Fill depth is measured against the
-carved DEM, so it overstates basins wherever a real flow path (an
-unmapped culvert, a bridge) is missing from the stage-1 carve data.
+``MORPHOLOGY_CITATION`` below).
 
-Degenerate cases: --fill-split inf treats all ground as low-fill (the
-carved/filled tiles are then not read), and --radius 0 --fill-split inf
-reproduces the stage-6 raster as class 1/0 plus nodata.
+Degenerate case: --radius 0 --lake-min-ha 0 reproduces the stage-6
+raster as class 1/0 plus nodata in both outputs (the opening is the
+identity and every stage-6 component reaches its stream through the
+spill routes).
 
 Output
 ------
-``data/07_classified/floodplains_classified.tif`` - int8,
-deflate-compressed GeoTIFF on the stage-6 grid and CRS (nothing is
-resampled or reprojected; distances assume a projected metre CRS with
-square pixels):
+Two int8, deflate-compressed GeoTIFFs on the stage-6 grid and CRS
+(nothing is resampled or reprojected; distances assume a projected metre
+CRS with square pixels).
 
-     0  upland (not floodplain)
-     1  floodplain with fill depth < --fill-split, in contact with the
-        stream network through low-fill ground
-     2  floodplain without such contact - high-fill ground, or low-fill
-        ground whose connection was severed - within --dmax metres of a
-        low-fill stream pixel
-     3  as class 2, but farther than --dmax
+``data/07_classified/floodplains_classified.tif``:
+
+     0  dry land (not floodplain)
+     1  potential floodplain/basin: floodplain with stream contact after
+        the opening, or within --dmax metres of a stream pixel
+     2  blob: floodplain farther than --dmax from any stream pixel
+     3  lake: hydro-flattened open water of at least --lake-min-ha, plus
+        its shore floodplain (controlling stream pixel inside a lake)
     -1  nodata (nodata in the stage-6 raster)
+
+``data/07_classified/floodplains_clean.tif`` - class 1 alone as a binary
+raster in the stage-6 encoding (1 = floodplain, 0 = other, -1 = nodata):
+the GFPLAIN floodplain minus lakes, shores and blobs.
 
 Credits
 -------
-* Source data: floodplain, flow-accumulation and DEM rasters from the
-  earlier pipeline stages - presumed source: National Land Survey of
+* Source data: floodplain, flow-accumulation and carved DEM rasters from
+  the earlier pipeline stages - presumed source: National Land Survey of
   Finland 2 m elevation model (KM2), CC BY 4.0.
 * Tools that enabled this work: Python, NumPy (Harris et al., 2020),
-  SciPy (Virtanen et al., 2020), rasterio (Gillies et al.) on GDAL
+  SciPy (Virtanen et al., 2020), Numba (Lam, Pitrou and Seibert, 2015),
+  pyflwdir (Eilander et al., 2021), rasterio (Gillies et al.) on GDAL
   (GDAL/OGR contributors, OSGeo).
 
 Usage (inside the ``water`` conda environment, ``conda activate water``)
 -----
     python 07_classify.py                   # defaults from USER SETTINGS below
     python 07_classify.py --radius 3        # opening disc radius, pixels
-    python 07_classify.py --dmax 100        # class-2/3 distance split, metres
-    python 07_classify.py --fill-split 0.5  # class-1/2 fill-depth split, metres
+    python 07_classify.py --dmax 100        # class-1/2 distance limit, metres
+    python 07_classify.py --lake-min-ha 0   # disable the lake class
 """
 
 from __future__ import annotations
@@ -99,13 +116,14 @@ FLOODPLAINS_RASTER = "data/06_floodplains/floodplains.tif"
 UPAREA_RASTER = "data/04_accumulation/flow_accumulation_d8.tif"
                         # D8 flow accumulation (04_flow_accumulation.py
                         # output); its m2/pixels units tag is honoured
+D8_RASTER = "data/03_flows/flow_direction_d8.tif"
+                        # D8 flow directions (03_flow_router.py output),
+                        # used to trace lake shores (only read when
+                        # --lake-min-ha > 0)
 CARVED_DIR = "data/01_carved"
-                        # carved DEM tiles (01_carve_dem.py output)
-FILLED_DIR = "data/02_filled"
-                        # filled DEM tiles (02_fill_dem.py output); their
-                        # difference to the carved tiles is the fill depth
-                        # (both folders are only read when --fill-split
-                        # is finite)
+                        # carved DEM tiles (01_carve_dem.py output), used
+                        # by the lake detector (only read when
+                        # --lake-min-ha > 0)
 OUTPUTS_DIR = "data/07_classified"
 
 # There is no --upa-min here: the stream threshold is read from the
@@ -115,12 +133,12 @@ OUTPUTS_DIR = "data/07_classified"
 
 OPENING_RADIUS_PX = 3   # --radius: opening disc radius in pixels; severs
                         # floodplain connections narrower than ~2*radius
-DMAX_M = 100.0          # --dmax: lateral distance to the nearest low-fill
-                        # stream pixel splitting class 2 from class 3, m
-FILL_SPLIT_M = 1.0      # --fill-split: the class-1/2 boundary in metres
-                        # of fill depth (filled - carved DEM); only ground
-                        # below it can carry stream contact; inf treats
-                        # all ground as low-fill
+DMAX_M = 100.0          # --dmax: lateral distance to the nearest stream
+                        # pixel splitting class 1 from class 2, in metres
+LAKE_MIN_HA = 1.0       # --lake-min-ha: minimum area of a constant-
+                        # elevation water surface to classify as lake, in
+                        # hectares (1 ha is the Finnish lake/pond limit);
+                        # 0 disables the lake class
 
 # ========================== end of USER SETTINGS ===========================
 
@@ -131,12 +149,13 @@ from pathlib import Path
 
 import numpy as np
 import rasterio
+from numba import njit
 from scipy import ndimage as ndi
 
 from pipeline_io import (
-    SOURCE_DATA_CREDIT_KNOWN, SOURCE_DATA_CREDIT_PRESUMED, UPA_MIN,
-    build_mosaic, collect_provenance, find_dems, load_uparea, resolve_near,
-    validate_tiles, write_raster,
+    NODATA, SOURCE_DATA_CREDIT_KNOWN, SOURCE_DATA_CREDIT_PRESUMED, UPA_MIN,
+    build_flwdir, build_mosaic, collect_provenance, find_dems, load_d8,
+    load_uparea, resolve_near, validate_tiles, write_raster,
 )
 
 HERE = Path(__file__).resolve().parent
@@ -147,10 +166,11 @@ HERE = Path(__file__).resolve().parent
 
 FP_NODATA = -1          # nodata of the stage-6 raster and of the output
 
-CLS_UPLAND = 0          # not floodplain
-CLS_CONTACT = 1         # low-fill floodplain in contact with the network
-CLS_NEAR = 2            # no low-fill contact, within --dmax of a stream
-CLS_FAR = 3             # no low-fill contact, farther than --dmax
+CLS_DRY = 0             # not floodplain
+CLS_FLOOD = 1           # stream contact, or within --dmax of a stream
+CLS_BLOB = 2            # floodplain farther than --dmax from any stream
+CLS_LAKE = 3            # hydro-flattened open water >= --lake-min-ha,
+                        # plus its shore floodplain
 
 EIGHT = np.ones((3, 3), dtype=bool)     # 8-connectivity, for label/dilation
 
@@ -160,45 +180,74 @@ MORPHOLOGY_CITATION = (
     "doi:10.1007/978-3-662-05088-0."
 )
 
-TOOL_CREDITS_SCIPY = (
+TOOL_CREDITS_CLASSIFY = (
     "Python, NumPy (Harris et al., 2020, doi:10.1038/s41586-020-2649-2), "
     "SciPy (Virtanen et al., 2020, doi:10.1038/s41592-019-0686-2), "
+    "Numba (Lam, Pitrou and Seibert, 2015, doi:10.1145/2833157.2833162), "
+    "pyflwdir (Eilander et al., 2021, doi:10.5194/hess-25-5287-2021), "
     "rasterio (Gillies et al.), GDAL (GDAL/OGR contributors, OSGeo)."
 )
 
 
 # ---------------------------------------------------------------------------
-# Fill depth
+# Lake detection
 # ---------------------------------------------------------------------------
 
-def load_fill_depth(carved_dir, filled_dir, transform, shape, crs):
-    """Mosaic the carved and filled DEM tiles; return the fill depth grid.
+def detect_lakes(carved_dir, transform, shape, crs, min_ha):
+    """Detect hydro-flattened water surfaces on the carved DEM mosaic.
 
-    Fill depth = filled - carved elevation, in metres: how much stage 2's
-    depression filling raised each pixel toward its pour point. float32
-    is fine for the difference - the 1e-8 flat-resolution gradients are
-    noise at --fill-split scale. Both mosaics must sit exactly on the
-    floodplain raster's grid; fails hard otherwise. Returns
-    ``(fill_depth, carved_paths, filled_paths)``.
+    KM2 flattens each water body to one constant elevation, so open
+    water is a connected region of bit-exact equal values - nothing
+    natural is that flat at centimetre quantization. Interior pixels
+    (3x3 min == max) seed the mask; two value-matched dilations recover
+    the one-pixel rim and reunite bodies split at narrows (bounded, so
+    coincidentally equal shore pixels cannot leak far); components
+    smaller than ``min_ha`` hectares are dropped. The mosaic must sit
+    exactly on the floodplain raster's grid; fails hard otherwise.
+    Returns ``(lakes, n_lakes, carved_paths)``.
     """
-    mosaics, path_lists = [], []
-    for what, folder in (("carved", carved_dir), ("filled", filled_dir)):
-        paths = find_dems(None, folder)
-        print(f"{what} DEM tiles ({len(paths)}): "
-              + ", ".join(p.name for p in paths))
-        validate_tiles(paths)
-        elevtn, t, c = build_mosaic(paths)
-        if (c != crs or elevtn.shape != shape
-                or not t.almost_equals(transform, precision=1e-6)):
-            sys.exit(f"{folder}: the {what} DEM mosaic is not on the "
-                     f"floodplain raster's grid; the tiles and the "
-                     f"floodplain raster must come from the same "
-                     f"pipeline run")
-        mosaics.append(elevtn)
-        path_lists.append(paths)
-    fill_depth = mosaics[1] - mosaics[0]
-    del mosaics
-    return fill_depth, path_lists[0], path_lists[1]
+    paths = find_dems(None, carved_dir)
+    print(f"carved DEM tiles ({len(paths)}): "
+          + ", ".join(p.name for p in paths))
+    validate_tiles(paths)
+    elevtn, t, c = build_mosaic(paths)
+    if (c != crs or elevtn.shape != shape
+            or not t.almost_equals(transform, precision=1e-6)):
+        sys.exit(f"{carved_dir}: the carved DEM mosaic is not on the "
+                 f"floodplain raster's grid; the tiles and the floodplain "
+                 f"raster must come from the same pipeline run")
+    valid = elevtn != NODATA
+    flat = (ndi.maximum_filter(elevtn, size=3)
+            == ndi.minimum_filter(elevtn, size=3)) & valid
+    for _ in range(2):
+        near = ndi.maximum_filter(
+            np.where(flat, elevtn, -np.inf), size=3)
+        flat |= valid & ~flat & (elevtn == near)
+    del valid
+    labels, n = ndi.label(flat, structure=EIGHT)
+    del flat
+    pixel_ha = abs(transform.a * transform.e) / 1e4
+    counts = np.bincount(labels.ravel())
+    keep = np.zeros(n + 1, dtype=bool)
+    keep[1:] = counts[1:] * pixel_ha >= min_ha
+    lakes = keep[labels]
+    del labels
+    return lakes, int(keep.sum()), paths
+
+
+@njit(cache=True)
+def _drains_to_lake(idxs_ds, seq, stream, lake):
+    """1 where the first stream pixel downstream (itself included) is in a
+    lake - i.e. where the controlling stream pixel that stage 6 took the
+    flood level from lies inside a lake."""
+    out = np.zeros(stream.size, dtype=np.uint8)
+    for i in range(seq.size):  # down- to upstream
+        idx0 = seq[i]
+        if stream[idx0]:
+            out[idx0] = 1 if lake[idx0] else 0
+        else:
+            out[idx0] = out[idxs_ds[idx0]]
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -211,62 +260,58 @@ def disk(radius):
     return (xx * xx + yy * yy) <= radius * radius
 
 
-def classify(fp, fp_low, stream_low, radius, dmax_m, pixel_m):
-    """Classify floodplain pixels by fill depth and stream contact.
+def classify(fp, stream, radius, dmax_m, pixel_m):
+    """Split floodplain pixels into class 1 (floodplain/basin) and 2 (blob).
 
-    ``fp``, ``fp_low`` and ``stream_low`` are boolean grids that must
-    already exclude nodata pixels: ``fp_low``/``stream_low`` are the
-    floodplain and stream masks restricted to low-fill ground (fill
-    depth below the --fill-split threshold; pass ``fp_low = fp`` and
-    ``stream_low = stream`` to disable the split). Only low-fill ground
-    carries stream contact. Returns ``(classes, n_comp)``: an int8 grid
-    of CLS_UPLAND/CLS_CONTACT/CLS_NEAR/CLS_FAR (the caller stamps
-    nodata) and the per-class component counts ``{1: .., 2: .., 3: ..}``.
+    ``fp`` and ``stream`` are boolean grids that must already exclude
+    nodata pixels. Returns ``(classes, n_comp)``: an int8 grid of
+    CLS_DRY/CLS_FLOOD/CLS_BLOB (the caller stamps lakes and nodata) and
+    the component counts ``{1: .., 2: ..}``.
     """
-    # 1. The opening severs connections narrower than ~2*radius pixels;
-    #    it runs on the low-fill floodplain, so high-fill ground is
-    #    excluded from the start.
-    opened = ndi.binary_opening(fp_low, structure=disk(radius))
-
-    # 2. Keep the opened components that touch a low-fill stream pixel;
-    #    add the low-fill stream pixels back (streams are floodplain by
-    #    definition in stage 6, even where the corridor was thinner than
-    #    the disc); restore the shaved rim with exactly `radius` dilations
-    #    constrained to the low-fill floodplain (full reconstruction would
-    #    regrow through the severed connections).
+    # The opening severs connections narrower than ~2*radius pixels;
+    # components that keep stream contact are floodplain, the stream
+    # pixels are added back (floodplain by definition in stage 6), and
+    # the shaved rim is restored by exactly `radius` dilations within fp
+    # (full reconstruction would regrow through the severed connections).
+    opened = ndi.binary_opening(fp, structure=disk(radius))
     labels, n_labels = ndi.label(opened, structure=EIGHT)
     del opened
     touches = np.zeros(n_labels + 1, dtype=bool)
-    touches[labels[stream_low]] = True
+    touches[labels[stream]] = True
     touches[0] = False
     core = touches[labels]
     del labels
-    core |= stream_low
+    core |= stream
     if radius > 0:
         core = ndi.binary_dilation(core, structure=EIGHT, iterations=radius,
-                                   mask=fp_low)
+                                   mask=fp)
 
     classes = np.zeros(fp.shape, dtype=np.int8)
-    classes[core] = CLS_CONTACT
-    n_comp = {CLS_CONTACT: int(ndi.label(core, structure=EIGHT)[1]),
-              CLS_NEAR: 0, CLS_FAR: 0}
+    classes[core] = CLS_FLOOD
 
-    # 3. Every other floodplain component: minimum Euclidean distance to
-    #    a low-fill stream pixel <= dmax -> class 2, farther -> class 3.
-    dist_m = ndi.distance_transform_edt(~stream_low) * pixel_m
+    # Severed components join class 1 within dmax of a stream pixel
+    # (minimum Euclidean distance per component); farther ones are blobs.
+    dist_m = ndi.distance_transform_edt(~stream) * pixel_m
     rest = fp & ~core
     del core
     labels, n_labels = ndi.label(rest, structure=EIGHT)
     del rest
+    n_blob = 0
     if n_labels:
         mins = np.asarray(ndi.minimum(dist_m, labels=labels,
                                       index=np.arange(1, n_labels + 1)))
-        lookup = np.zeros(n_labels + 1, dtype=np.int8)
-        lookup[1:] = np.where(mins <= dmax_m, CLS_NEAR, CLS_FAR)
-        n_comp[CLS_NEAR] = int((mins <= dmax_m).sum())
-        n_comp[CLS_FAR] = n_labels - n_comp[CLS_NEAR]
+        lookup = np.concatenate((
+            [np.int8(0)],
+            np.where(mins <= dmax_m, CLS_FLOOD, CLS_BLOB).astype(np.int8),
+        ))
         in_rest = labels > 0
         classes[in_rest] = lookup[labels[in_rest]]
+        n_blob = int((mins > dmax_m).sum())
+    del dist_m, labels
+
+    n_comp = {CLS_FLOOD: int(ndi.label(classes == CLS_FLOOD,
+                                       structure=EIGHT)[1]),
+              CLS_BLOB: n_blob}
     return classes, n_comp
 
 
@@ -278,9 +323,9 @@ def main(argv=None) -> int:
     # The USER SETTINGS block at the top of the script feeds the argparse
     # defaults directly, so there is exactly one source of truth per value.
     ap = argparse.ArgumentParser(
-        description="Classify the stage-6 floodplains by fill depth "
-                    "(filled - carved DEM) and contact with the stream "
-                    "network through low-fill ground.")
+        description="Classify the stage-6 floodplains into potential "
+                    "floodplain/basin (1), blobs far from any stream (2) "
+                    "and lakes (3).")
     ap.add_argument("--floodplains", type=Path,
                     default=resolve_near(FLOODPLAINS_RASTER, HERE),
                     help="stage-6 floodplain raster (06_floodplains.py "
@@ -289,14 +334,14 @@ def main(argv=None) -> int:
                     default=resolve_near(UPAREA_RASTER, HERE),
                     help="D8 flow-accumulation raster "
                          "(04_flow_accumulation.py output)")
+    ap.add_argument("--d8", type=Path,
+                    default=resolve_near(D8_RASTER, HERE),
+                    help="D8 flow-direction raster (03_flow_router.py "
+                         "output; only read when --lake-min-ha > 0)")
     ap.add_argument("--carved-dir", type=Path,
                     default=resolve_near(CARVED_DIR, HERE),
                     help="carved DEM tiles (01_carve_dem.py output; only "
-                         "read when --fill-split is finite)")
-    ap.add_argument("--filled-dir", type=Path,
-                    default=resolve_near(FILLED_DIR, HERE),
-                    help="filled DEM tiles (02_fill_dem.py output; only "
-                         "read when --fill-split is finite)")
+                         "read when --lake-min-ha > 0)")
     ap.add_argument("--outputs-dir", type=Path,
                     default=resolve_near(OUTPUTS_DIR, HERE))
     ap.add_argument("--radius", type=int, default=OPENING_RADIUS_PX,
@@ -305,23 +350,22 @@ def main(argv=None) -> int:
                          "connections narrower than ~2*radius "
                          f"(default {OPENING_RADIUS_PX})")
     ap.add_argument("--dmax", type=float, default=DMAX_M, metavar="M",
-                    help="a floodplain component without low-fill stream "
-                         "contact is class 2 within this distance of a "
-                         "low-fill stream pixel, class 3 farther away "
-                         f"(default {DMAX_M:g})")
-    ap.add_argument("--fill-split", type=float, default=FILL_SPLIT_M,
-                    metavar="M",
-                    help="the class-1/2 boundary in metres of fill depth "
-                         "(filled - carved DEM): only ground below it can "
-                         "carry stream contact; inf treats all ground as "
-                         f"low-fill (default {FILL_SPLIT_M:g})")
+                    help="a severed floodplain component stays class 1 "
+                         "within this distance of a stream pixel and is a "
+                         f"blob (class 2) farther away (default {DMAX_M:g})")
+    ap.add_argument("--lake-min-ha", type=float, default=LAKE_MIN_HA,
+                    metavar="HA",
+                    help="minimum area of a constant-elevation "
+                         "(hydro-flattened) water surface to classify as "
+                         "lake, in hectares; 0 disables the lake class "
+                         f"(default {LAKE_MIN_HA:g})")
     args = ap.parse_args(argv)
     if args.radius < 0:
         ap.error("--radius must be >= 0")
     if args.dmax < 0:
         ap.error("--dmax must be >= 0")
-    if args.fill_split < 0:
-        ap.error("--fill-split must be >= 0 (or inf)")
+    if args.lake_min_ha < 0:
+        ap.error("--lake-min-ha must be >= 0 (0 disables the lake class)")
 
     t0 = time.perf_counter()
     fp_path = args.floodplains
@@ -365,68 +409,66 @@ def main(argv=None) -> int:
         sys.exit(f"no pixel reaches the stream threshold {upa_min:g} km2; "
                  f"there is no stream network to classify against")
 
-    carved_paths = filled_paths = None
-    if np.isfinite(args.fill_split):
-        fill_depth, carved_paths, filled_paths = load_fill_depth(
-            args.carved_dir, args.filled_dir, transform, shape, crs)
-        low = fill_depth < np.float32(args.fill_split)
-        del fill_depth
-        stream_low = stream & low
-        fp_low = fp & low
-        del low
-        n_low = int(stream_low.sum())
-        print(f"stream pixels on low-fill ground "
-              f"(fill depth < {args.fill_split:g} m): {n_low} of {n_stream}")
-        n_fp = int(fp.sum())
-        n_high = n_fp - int(fp_low.sum())
-        print(f"floodplain pixels on high-fill ground: {n_high} of {n_fp} "
-              f"({100 * n_high / max(n_fp, 1):.1f}%)")
-        if n_low == 0:
-            sys.exit(f"--fill-split {args.fill_split:g} m leaves no "
-                     f"low-fill stream pixel; nothing to classify against")
-    else:
-        stream_low = stream
-        fp_low = fp
-        print("fill-depth split disabled (--fill-split inf): all ground "
-              "treated as low-fill")
-    del stream
+    classes, n_comp = classify(fp, stream, args.radius, args.dmax, px)
 
-    classes, n_comp = classify(fp, fp_low, stream_low, args.radius,
-                               args.dmax, px)
+    carved_paths = None
+    n_lakes = 0
+    if args.lake_min_ha > 0:
+        lakes, n_lakes, carved_paths = detect_lakes(
+            args.carved_dir, transform, shape, crs, args.lake_min_ha)
+        print(f"lakes: {n_lakes} water bodies >= {args.lake_min_ha:g} ha")
+        # Shores: floodplain whose controlling stream pixel is in a lake.
+        d8u8, _ = load_d8(args.d8, transform, shape, crs)
+        flw = build_flwdir(d8u8, transform)
+        del d8u8
+        shore = _drains_to_lake(
+            flw.idxs_ds, flw.idxs_seq,
+            stream.ravel().astype(np.uint8),
+            lakes.ravel().astype(np.uint8),
+        ).reshape(shape).astype(bool)
+        del flw
+        shore &= fp & ~lakes
+        print(f"lake shores: {int(shore.sum())} floodplain pixels whose "
+              f"controlling stream pixel lies in a lake")
+        classes[(lakes | shore) & valid] = CLS_LAKE
+        del lakes, shore
+    else:
+        print("lake detection disabled (--lake-min-ha 0)")
+    del stream
     classes[~valid] = FP_NODATA
 
     forwarded = collect_provenance([fp_path])
     tags = dict(
-        title="Floodplain classification by fill depth and stream contact",
+        title="Floodplain classification: floodplain/basin, blobs, lakes",
         classification_method=(
-            "Fill depth = filled - carved DEM; ground below "
-            "classify_fill_split_m is low-fill; a binary opening (disc of "
-            "radius classify_radius_px) of the low-fill floodplain severs "
-            "narrow connections; components touching a low-fill stream "
-            "pixel, plus the low-fill stream pixels, geodesically "
-            "re-dilated radius steps within the low-fill floodplain, form "
-            "class 1; every other floodplain component is class 2 when "
-            "its minimum Euclidean distance to a low-fill stream pixel "
-            "is <= classify_dmax_m, else class 3."),
+            "A binary opening (disc of radius classify_radius_px) severs "
+            "floodplain connections narrower than ~2*radius; floodplain "
+            "keeping stream contact, or within classify_dmax_m of a "
+            "stream pixel, is class 1; farther floodplain is class 2; "
+            "connected regions of constant carved elevation of at least "
+            "classify_lake_min_ha hectares (KM2 hydro-flattened water "
+            "surfaces), plus floodplain whose controlling stream pixel "
+            "(first stream pixel downstream along D8) lies in a lake, "
+            "are class 3, stamped last - classes 1 and 2 describe river "
+            "floodplain only."),
         morphology_citation=MORPHOLOGY_CITATION,
         parameters=f"radius={args.radius} px, dmax={args.dmax:g} m, "
-                   f"fill_split={args.fill_split:g} m, "
+                   f"lake_min_ha={args.lake_min_ha:g} ha, "
                    f"upa_min={upa_min:g} km2",
         classify_radius_px=f"{args.radius}",
         classify_dmax_m=f"{args.dmax:g}",
-        classify_fill_split_m=f"{args.fill_split:g}",
+        classify_lake_min_ha=f"{args.lake_min_ha:g}",
         stream_threshold_km2=f"{upa_min:g}",
-        class_encoding="0 = upland; 1 = floodplain, fill depth < "
-                       "fill_split, stream contact through low-fill "
-                       "ground; 2 = floodplain without such contact, "
-                       "within dmax of a low-fill stream pixel; 3 = as "
-                       "2 but farther; -1 = nodata",
+        class_encoding="0 = dry land; 1 = potential floodplain/basin; "
+                       "2 = blob (floodplain farther than dmax from any "
+                       "stream pixel); 3 = lake (hydro-flattened open "
+                       "water and its shore floodplain); -1 = nodata",
         source_floodplain_raster=fp_path.name,
         source_flow_accumulation_raster=args.uparea.name,
         source_data_credit=(SOURCE_DATA_CREDIT_KNOWN
                             if "dem_source_tiles" in forwarded
                             else SOURCE_DATA_CREDIT_PRESUMED),
-        software_credits=TOOL_CREDITS_SCIPY,
+        software_credits=TOOL_CREDITS_CLASSIFY,
         generated_by="07_classify.py",
         **forwarded,
     )
@@ -434,28 +476,48 @@ def main(argv=None) -> int:
         tags["flow_routing_algorithm"] = routing_alg
     if carved_paths is not None:
         tags["source_carved_tiles"] = ", ".join(p.name for p in carved_paths)
-        tags["source_filled_tiles"] = ", ".join(p.name for p in filled_paths)
+        tags["source_flow_direction_raster"] = args.d8.name
 
     out_path = write_raster(
         args.outputs_dir / "floodplains_classified.tif", classes,
         transform, crs, nodata=FP_NODATA, dtype="int8", tags=tags,
     )
 
+    # The clean binary companion: class 1 alone, in the stage-6 encoding.
+    clean = (classes == CLS_FLOOD).astype(np.int8)
+    clean[~valid] = FP_NODATA
+    clean_tags = dict(tags)
+    clean_tags["title"] = ("Cleaned geomorphic floodplains (GFPLAIN minus "
+                           "lakes, shores and blobs)")
+    clean_tags["class_encoding"] = "1 = floodplain, 0 = other, -1 = nodata"
+    clean_tags["derived_from"] = ("class 1 of floodplains_classified.tif, "
+                                  "same run and parameters")
+    clean_path = write_raster(
+        args.outputs_dir / "floodplains_clean.tif", clean,
+        transform, crs, nodata=FP_NODATA, dtype="int8", tags=clean_tags,
+    )
+
     pixel_ha = px * py / 1e4
     print(f"classification (radius={args.radius} px, dmax={args.dmax:g} m, "
-          f"fill_split={args.fill_split:g} m, upa_min={upa_min:g} km2):")
-    names = {CLS_UPLAND: "upland",
-             CLS_CONTACT: "low fill, stream contact",
-             CLS_NEAR: "no contact, within dmax",
-             CLS_FAR: "no contact, beyond dmax"}
+          f"lake_min_ha={args.lake_min_ha:g} ha, upa_min={upa_min:g} km2):")
+    names = {CLS_DRY: "dry land",
+             CLS_FLOOD: "potential floodplain/basin",
+             CLS_BLOB: "blob",
+             CLS_LAKE: "lake and shore"}
     for value, name in names.items():
         n = int((classes == value).sum())
         line = f"  class {value} ({name}): {n} pixels = {n * pixel_ha:.1f} ha"
         if value in n_comp:
             line += f", {n_comp[value]} components"
+        elif value == CLS_LAKE and n_lakes:
+            line += f", {n_lakes} water bodies"
         print(line)
     print(f"  nodata: {int((~valid).sum())} pixels")
-    print(f"-> {out_path}  ({time.perf_counter() - t0:.1f} s)")
+    n1 = int((clean == 1).sum())
+    print(f"clean floodplain (class 1 only): {n1} pixels = "
+          f"{n1 * pixel_ha:.1f} ha")
+    print(f"-> {out_path}")
+    print(f"-> {clean_path}  ({time.perf_counter() - t0:.1f} s)")
     return 0
 
 
