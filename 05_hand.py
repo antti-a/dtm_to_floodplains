@@ -6,7 +6,7 @@ Created on Wed Jul 8 2026
 Written with Claude Code (Anthropic).
 
 Pipeline stage 5, optional (see README.md):
-    reads   data/02_filled/*.tif                            (02_fill_dem.py)
+    reads   data/02_breached/*.tif                          (02_fill_dem.py)
             data/03_flows/flow_direction_d8.tif             (03_flow_router.py)
             data/04_accumulation/flow_accumulation_d8.tif   (04_flow_accumulation.py)
     writes  data/05_hand/hand.tif
@@ -14,14 +14,14 @@ Pipeline stage 5, optional (see README.md):
 HAND (Nobre et al., 2016) is the vertical distance between a pixel and the
 stream pixel it drains to along the D8 flow path: the local flood-relevant
 "height above the river". This stage recomputes nothing the pipeline already
-produced - the filled DEM, the D8 flow directions and the D8 flow
+produced - the conditioned DEM, the D8 flow directions and the D8 flow
 accumulation are read as-is; pyflwdir is used only to turn the existing D8
 raster into a flow graph (one downstream index per pixel plus a down-to-
 upstream pixel ordering).
 
 How it works
 ------------
-1. The filled DEM tiles are mosaicked in memory (tile validation,
+1. The conditioned DEM tiles are mosaicked in memory (tile validation,
    mosaicking and raster loading come from the companion module
    pipeline_io.py; no mosaic file is written).
 2. ``flow_direction_d8.tif`` is remapped to pyflwdir's uint8 convention
@@ -58,7 +58,7 @@ Spatial reference
 
 Credits
 -------
-* Source data: filled DEM and D8 rasters from the earlier pipeline stages,
+* Source data: conditioned DEM and D8 rasters from the earlier pipeline stages,
   derived from a 2 m digital elevation model in EPSG:3067 / N2000 - presumed
   to be the National Land Survey of Finland (Maanmittauslaitos) 2 m
   elevation model (KM2), licensed CC BY 4.0. Edit
@@ -84,10 +84,10 @@ from __future__ import annotations
 #                 no-argument run; any CLI flag overrides them
 # ===========================================================================
 
-INPUTS_DIR = "data/02_filled"       # filled DEM tiles; relative paths are
-OUTPUTS_DIR = "data/05_hand"        # resolved next to this script
+INPUTS_DIR = "data/02_breached"     # conditioned DEM tiles; relative paths
+OUTPUTS_DIR = "data/05_hand"        # are resolved next to this script
 DEM_FILES = None        # None = mosaic all *.tif in INPUTS_DIR, or a list,
-                        # e.g. ["filled_carved_L4142E.tif"]
+                        # e.g. ["breached_carved_L4142E.tif"]
 
 D8_RASTER = "data/03_flows/flow_direction_d8.tif"
                         # D8 flow directions (03_flow_router.py output)
@@ -165,7 +165,7 @@ def _hand_kernel(idxs_ds, seq, drain, elevtn):
 
 
 def compute_hand(flw, drain, elevtn, nodata=NODATA):
-    """Return HAND [m] on the filled DEM; nodata kept where the DEM has it."""
+    """Return HAND [m] on the conditioned DEM; nodata kept where the DEM has it."""
     hand = _hand_kernel(
         flw.idxs_ds, flw.idxs_seq, drain.ravel(), elevtn.ravel()
     ).reshape(flw.shape)
@@ -182,9 +182,9 @@ def main(argv=None) -> int:
     # defaults directly, so there is exactly one source of truth per value.
     ap = argparse.ArgumentParser(
         description="Height above nearest drain (HAND) from the pipeline's "
-                    "filled DEM, D8 flow directions and D8 flow accumulation.")
+                    "conditioned DEM, D8 flow directions and D8 flow accumulation.")
     ap.add_argument("--dem", nargs="+", default=None, metavar="TIF",
-                    help="filled DEM tiles (default: all in --inputs-dir)")
+                    help="conditioned DEM tiles (default: all in --inputs-dir)")
     ap.add_argument("--inputs-dir", type=Path,
                     default=resolve_near(INPUTS_DIR, HERE))
     ap.add_argument("--outputs-dir", type=Path,

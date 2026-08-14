@@ -9,15 +9,15 @@ Written with Claude Code (Anthropic).
 
 Pipeline stage 2 (see README.md):
     reads   data/01_carved/*.tif        (01_carve_dem.py output)
-    writes  data/02_filled/filled_<name>.tif            (--method fill, default)
-        or  data/02_breached/breached_<name>.tif        (--method breach)
+    writes  data/02_breached/breached_<name>.tif        (--method breach, default)
             data/02_breached/depth/breach_depth.tif     (breach diagnostic)
-of which the fill output is the default input of the next stage
-(03_flow_router.py); the breach output feeds the same stages through their
+        or  data/02_filled/filled_<name>.tif            (--method fill)
+of which the breach output is, on this branch, the default input of stages
+3, 5 and 6; the fill output feeds the same stages through their
 ``--inputs-dir`` flags (see the A/B commands below).
 
 For every GeoTIFF DEM in the input folder, removes the artefacts that
-break downstream flow routing. With ``--method fill`` (the default):
+break downstream flow routing. With ``--method fill``:
 
   1. fill pits and depressions    (pysheds ``fill_depressions``, the
                                    priority-flood of Barnes, Lehman and
@@ -31,7 +31,7 @@ break downstream flow routing. With ``--method fill`` (the default):
                                    the output DEM itself drains -- not just
                                    some side-channel flow-direction raster)
 
-With ``--method breach`` (experimental), depressions are instead removed by
+With ``--method breach`` (this branch's default), depressions are removed by
 complete breaching (the carving of Soille, Vogt and Colombo (2003); the
 "complete breaching" of Lindsay (2016)): a priority flood from the outlets
 records how it reached each pixel, and when it pops a pixel with no lower
@@ -76,22 +76,24 @@ Notes:
     stage's drainage check and stage 3's treat nodata (as an outlet).
   * Pixels that are nodata in an input stay nodata in its output.
   * All inputs must share CRS, pixel size and grid alignment (validated).
-  * Breach mode is experimental (an A/B against fill); downstream stages
-    default to the fill outputs, so the breach variant is run manually:
+  * On this branch the breach pipeline is the default: a no-argument run
+    breaches (fill limit ``FILL_LIMIT``), and stages 3, 5 and 6 read
+    data/02_breached unless told otherwise. The fill variant stays
+    available for A/B comparison, run manually into parallel folders:
 
-        python 02_fill_dem.py --method breach --fill-limit 0.2
-        python 03_flow_router.py --inputs-dir data/02_breached \\
-            --outputs-dir data/03_flows_breach
-        python 04_flow_accumulation.py --inputs-dir data/03_flows_breach \\
-            --outputs-dir data/04_accumulation_breach
-        python 05_hand.py --inputs-dir data/02_breached \\
-            --outputs-dir data/05_hand_breach \\
-            --d8 data/03_flows_breach/flow_direction_d8.tif \\
-            --uparea data/04_accumulation_breach/flow_accumulation_d8.tif
-        python 06_floodplains.py --inputs-dir data/02_breached \\
-            --outputs-dir data/06_floodplains_breach \\
-            --d8 data/03_flows_breach/flow_direction_d8.tif \\
-            --uparea data/04_accumulation_breach/flow_accumulation_d8.tif
+        python 02_fill_dem.py --method fill
+        python 03_flow_router.py --inputs-dir data/02_filled \\
+            --outputs-dir data/03_flows_fill
+        python 04_flow_accumulation.py --inputs-dir data/03_flows_fill \\
+            --outputs-dir data/04_accumulation_fill
+        python 05_hand.py --inputs-dir data/02_filled \\
+            --outputs-dir data/05_hand_fill \\
+            --d8 data/03_flows_fill/flow_direction_d8.tif \\
+            --uparea data/04_accumulation_fill/flow_accumulation_d8.tif
+        python 06_floodplains.py --inputs-dir data/02_filled \\
+            --outputs-dir data/06_floodplains_fill \\
+            --d8 data/03_flows_fill/flow_direction_d8.tif \\
+            --uparea data/04_accumulation_fill/flow_accumulation_d8.tif
 
 References:
   * Barnes, R., Lehman, C. and Mulla, D. (2014a) 'Priority-flood: an
@@ -112,8 +114,8 @@ References:
 Run inside the ``water`` conda environment:
 
     conda activate water
-    python 02_fill_dem.py
-    python 02_fill_dem.py --method breach --fill-limit 0.2
+    python 02_fill_dem.py                 (breach, this branch's default)
+    python 02_fill_dem.py --method fill
 """
 
 from __future__ import annotations
@@ -156,6 +158,10 @@ FLAT_MAX_ITER = 100_000
 # breach mode's crop-back guard allows raising up to this plus the fill
 # limit, and anything more means the breach itself raised terrain -- a bug.
 MAX_FLAT_INFLATION = 3 * FLAT_EPS * FLAT_MAX_ITER   # 3 mm
+
+# Depression-removal method for a no-argument run; the CLI flag --method
+# overrides. On this branch the breach pipeline is the default.
+METHOD = "breach"
 
 # Breach mode: depressions at most this deep (spill minus floor, metres)
 # are filled instead of breached, so noise pits do not each cut a trench.
@@ -666,7 +672,7 @@ def crop_back(
     dem_path: Path,
     out_dir: Path = OUT_DIR,
     nodata: float = NODATA,
-    method: str = "fill",
+    method: str = METHOD,
     fill_limit: float = FILL_LIMIT,
 ) -> Path:
     """Write ``out_dir/<filled_|breached_><name>.tif`` on ``dem_path``'s grid.
@@ -784,7 +790,7 @@ def fill_all(
     out_dir: Path | None = None,
     work_dir: Path | None = None,
     keep_intermediate: bool = KEEP_INTERMEDIATE,
-    method: str = "fill",
+    method: str = METHOD,
     fill_limit: float = FILL_LIMIT,
 ) -> list[Path]:
     """Condition every ``*.tif`` in ``input_dir``; return the written paths.
@@ -834,14 +840,15 @@ def fill_all(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Pipeline stage 2: hydrologically condition the carved "
-                    "DEMs by filling depressions (default) or by breaching "
-                    "(carving) them."
+                    "DEMs by breaching (carving) depressions (default) or "
+                    "by filling them."
     )
     parser.add_argument(
-        "--method", choices=("fill", "breach"), default="fill",
-        help="fill = pysheds priority-flood fill (default); breach = carve "
-             "a drainage path through each depression's barrier, keeping "
-             "basin floors at their true elevation (writes data/02_breached)"
+        "--method", choices=("fill", "breach"), default=METHOD,
+        help="breach (default) = carve a drainage path through each "
+             "depression's barrier, keeping basin floors at their true "
+             "elevation (writes data/02_breached); fill = pysheds "
+             "priority-flood fill (writes data/02_filled)"
     )
     parser.add_argument(
         "--fill-limit", type=float, default=FILL_LIMIT, metavar="M",

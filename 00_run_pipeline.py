@@ -12,13 +12,17 @@ in the right order and stops at the first failure.
     stage         script                       reads                writes
     ------------  ---------------------------  -------------------  ------------------
     carve         01_carve_dem.py              data/00_source_dems  data/01_carved
-    fill          02_fill_dem.py               data/01_carved       data/02_filled
-    route         03_flow_router.py            data/02_filled       data/03_flows
+    fill          02_fill_dem.py               data/01_carved       data/02_breached
+    route         03_flow_router.py            data/02_breached     data/03_flows
     accumulation  04_flow_accumulation.py      data/03_flows        data/04_accumulation
-    hand          05_hand.py                   data/02_filled +     data/05_hand
+    hand          05_hand.py                   data/02_breached +   data/05_hand
                                                data/03_flows +
                                                data/04_accumulation
     floodplains   06_floodplains.py            (same as hand)       data/06_floodplains
+
+    On this branch the "fill" stage defaults to breach mode (complete
+    breaching, 02_fill_dem.py --method breach), so the conditioned DEMs
+    land in data/02_breached; --method fill still writes data/02_filled.
 
 USAGE (inside the ``water`` conda environment)
     python 00_run_pipeline.py                     # carve -> fill -> route
