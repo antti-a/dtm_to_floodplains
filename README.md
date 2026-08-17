@@ -6,7 +6,7 @@ national 2 m elevation model (KM2). This is terrain analysis only, no hydraulic
 modelling is done. The pipeline is built for Finnish data provided by the National Land Survey (NLS) and the Environment Institute (SYKE). 
 
 DTM is first carved with SYKE's culvert-correction raster so that flow crosses
-road embankments instead of ponding behind them. The carved DTM is then conditioned for hydrological calculations by removing depressions and pits so that every pixel drains out of the modelled area — by breaching (carving an outlet through each depression's barrier; the default) or by filling. Flow routing and accumulation are calculated on the conditioned DTM and used by the HAND and floodplain calculations; the HAND and floodplain heights themselves are measured on the carved (unconditioned) DTM, because conditioning distorts elevations — filling raises basin floors, breaching lowers river reaches — while it only needs to decide where water flows. The pipeline can be modified
+road embankments. The carved DTM is then conditioned for hydrological calculations so that every pixel drains out of the DTM. Flow routing and accumulation are calculated on the conditioned DTM and used by the HAND and floodplain calculations. HAND and floodplain heights themselves are calculated on the unconditioned DTM. The pipeline can be modified
 to work in other areas by swapping or skipping the culvert-carving stage which at the moment is specific to data available for Finland.
 The floodplain delineation (`h = a·A^b`) is the pipeline's only parametrized step. Suitable values of `a` and `b` depend on the intended use.
 
