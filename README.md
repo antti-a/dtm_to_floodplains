@@ -6,7 +6,7 @@ national 2 m elevation model (KM2). This is terrain analysis only, no hydraulic
 modelling is done. The pipeline is built for Finnish data provided by the National Land Survey (NLS) and the Environment Institute (SYKE). 
 
 DTM is first carved with SYKE's culvert-correction raster so that flow crosses
-road embankments instead of ponding behind them. Carved DTM is then conditioned for hydrological calculations by filling depressions and pits to ensure that every pixel drains out of the modelled area. Flow routing and accumulation are then calculated to be used by HAND and floodplain calculations. The pipeline can be modified
+road embankments instead of ponding behind them. The carved DTM is then conditioned for hydrological calculations by removing depressions and pits so that every pixel drains out of the modelled area — by breaching (carving an outlet through each depression's barrier; the default) or by filling. Flow routing and accumulation are calculated on the conditioned DTM and used by the HAND and floodplain calculations; the HAND and floodplain heights themselves are measured on the carved (unconditioned) DTM, because conditioning distorts elevations — filling raises basin floors, breaching lowers river reaches — while it only needs to decide where water flows. The pipeline can be modified
 to work in other areas by swapping or skipping the culvert-carving stage which at the moment is specific to data available for Finland.
 The floodplain delineation (`h = a·A^b`) is the pipeline's only parametrized step. Suitable values of `a` and `b` depend on the intended use.
 
@@ -44,7 +44,7 @@ reused):
 
 ```bash
 python 00_run_pipeline.py --from route
-python 00_run_pipeline.py --only fill route
+python 00_run_pipeline.py --only condition route
 python 00_run_pipeline.py --skip hand
 ```
 
@@ -82,11 +82,12 @@ python 03_flow_router.py --fdir all
 |-|-|-|
 |`00_run_pipeline.py`|`--from`, `--only`, `--skip`|which stages to run|
 |`00_run_pipeline.py`|`--upa-min KM2`|minimum contributing area defining a stream in km² (2.0)|
+|`02_condition_dem.py`|`--method breach/fill`|how depressions are removed (breach)|
 |`03_flow_router.py`|`--upa-min KM2`|minimum contributing area defining a stream in km² (2.0)|
 |`03_flow_router.py`|`--fdir d8 mfd dinf mdinf` / `all`|which routing algorithms to run (d8)|
 |`04_flow_accumulation.py`|`--units m2/pixel`|accumulation in square metres or pixel counts (m2)|
 |`05_hand.py`, `06_floodplains.py`|`--upa-min KM2`|minimum contributing area defining a stream in km² (2.0)|
-|`06_floodplains.py`|`--a`, `--b`|GFPLAIN power law `h = a·A^b` (0.1, 0.3)|
+|`06_floodplains.py`|`--a`, `--b`|GFPLAIN power law `h = a·A^b` (0.63, 0.3)|
 
 `python <script> --help` lists everything, including flags that repoint the
 input and output locations. Stages 1–2 are configured by the constants at
@@ -98,21 +99,29 @@ values are simply the defaults a no-argument run uses.
 |#|script|reads|writes|
 |-|-|-|-|
 |1|`01_carve_dem.py`|`data/00_source_dems/`|`data/01_carved/` (+ `data/culvert_cache/`)|
-|2|`02_fill_dem.py`|`data/01_carved/`|`data/02_filled/`|
-|3|`03_flow_router.py`|`data/02_filled/`|`data/03_flows/`|
+|2|`02_condition_dem.py`|`data/01_carved/`|`data/02_breached/` (`--method fill`: `data/02_filled/`)|
+|3|`03_flow_router.py`|`data/02_breached/`|`data/03_flows/`|
 |4|`04_flow_accumulation.py`|`data/03_flows/flow_direction_*.tif`|`data/04_accumulation/`|
-|5|`05_hand.py`|`data/02_filled/` + `data/03_flows/flow_direction_d8.tif` + `data/04_accumulation/flow_accumulation_d8.tif`|`data/05_hand/`|
+|5|`05_hand.py`|`data/01_carved/` (elevations) + `data/03_flows/flow_direction_d8.tif` + `data/04_accumulation/flow_accumulation_d8.tif`|`data/05_hand/`|
 |6|`06_floodplains.py`|same as stage 5|`data/06_floodplains/`|
 
 1. **Carve** — lowers the DTM at culverts and road crossings with the SYKE
 "Tierumpujen uomakorjaus" WCS layer so flow crosses embankments.
 Downloads are windowed and cached; a re-run skips finished tiles.
-2. **Fill** — pysheds `fill_depressions` (priority-flood) and
-`resolve_flats` (both Barnes et al., 2014) on the mosaic of all tiles,
-cropped back to each tile's grid. Outputs are float64 on purpose:
+2. **Condition** — removes depressions on the mosaic of all tiles and
+crops the result back to each tile's grid. `--method breach` (default):
+complete breaching (Soille, Vogt and Colombo, 2003; Lindsay, 2016) — a
+priority flood from the outlets records how it reached each pixel and,
+at every undrainable depression floor, lowers the pixels along that path
+to the floor's elevation, cutting a level trench through the barrier;
+depression floors keep their elevation and the metres lowered are written
+to `data/02_breached/depth/breach_depth.tif`. `--method fill`: pysheds
+`fill_depressions` (priority-flood; Barnes et al., 2014), which raises
+each depression to its spill level. Both are followed by pysheds
+`resolve_flats` (Barnes et al., 2014). Outputs are float64 on purpose:
 float32 collapses the flat-resolution gradients and silently
 un-conditions the DEM (stage 3 verifies drainage and stops if so).
-3. **Route** — mosaics the filled tiles and routes flow: D8 by default
+3. **Route** — mosaics the conditioned tiles and routes flow: D8 by default
 (O'Callaghan and Mark, 1984) as that is the format every later stage consumes.
 MFD, Dinf and MDinf available via `--fdir` for comparison, each
 with its own network, comparison-table row and direction raster.
@@ -120,11 +129,15 @@ with its own network, comparison-table row and direction raster.
 area) for every flow-direction raster found.
 5. **HAND** — height above nearest drain (Nobre et al., 2016): Each pixel's
 elevation above the stream pixel it drains to along the D8 flow path,
-with streams defined by the `--upa-min` threshold.
+with streams defined by the `--upa-min` threshold. As in stage 6, the flow
+path comes from the stage 3–4 rasters and the elevations from the stage-1
+carved DTM.
 6. **Floodplains** — GFPLAIN (Nardi et al., 2019): Every stream pixel
 carries a flood level `h = a·A^b` (h in m, A = upstream area in km²):
 A ground pixel belongs to the floodplain of a stream pixel it drains to if it
-rises no more than `h` metres above it.
+rises no more than `h` metres above it. Which stream pixel a pixel drains
+to comes from the stage 3–4 rasters (routed on the conditioned DTM); the
+elevations of both pixels are read from the stage-1 carved DTM.
 
 ## Outputs and metadata
 
@@ -145,7 +158,8 @@ https://github.com/Deltares/pyflwdir) in stages 5–6 creates HAND after Nobre e
 Nardi et al. (2019) with the coefficient `a` made an explicit parameter.
 
 Other essential tools for this project are: pysheds (D8/MFD/Dinf routing; stage 2 depression
-filling and flat resolution after Barnes, Lehman and Mulla, 2014),
+filling and flat resolution after Barnes, Lehman and Mulla, 2014; the stage 2 breaching is a
+Numba implementation of complete breaching after Soille, Vogt and Colombo, 2003 and Lindsay, 2016),
 rasterio/GDAL, NumPy and Numba. The MDinf direction mathematics in
 `mdinf.py` follow Seibert and McGlynn (2007), ported via WhiteboxTools'
 MIT-licensed implementation (John Lindsay).
@@ -171,6 +185,10 @@ parametrization of distributed hydrological models', *Hydrology and Earth
 System Sciences*, 25(9), pp. 5287–5313. Available at:
 https://doi.org/10.5194/hess-25-5287-2021
 
+Lindsay, J.B. (2016) 'Efficient hybrid breaching-filling sink removal
+methods in raster digital elevation models', *Hydrological Processes*,
+30(6), pp. 846–857. Available at: https://doi.org/10.1002/hyp.10648
+
 Nardi, F., Annis, A., Di Baldassarre, G., Vivoni, E.R. and Grimaldi, S.
 (2019) 'GFPLAIN250m, a global high-resolution dataset of Earth's
 floodplains', *Scientific Data*, 6, 180309. Available at:
@@ -188,6 +206,10 @@ https://doi.org/10.1016/S0734-189X(84)80011-0
 
 Rolim da Paz, A. (2025) *Digital elevation models for environmental studies*.
 Cham: Springer. Available at: https://doi.org/10.1007/978-3-032-04523-2
+
+Soille, P., Vogt, J. and Colombo, R. (2003) 'Carving and adaptive drainage
+enforcement of grid digital elevation models', *Water Resources Research*,
+39(12), 1366. Available at: https://doi.org/10.1029/2002WR001879
 
 Seibert, J. and McGlynn, B.L. (2007) 'A new triangular multiple flow
 direction algorithm for computing upslope areas from gridded digital

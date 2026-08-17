@@ -12,24 +12,26 @@ in the right order and stops at the first failure.
     stage         script                       reads                writes
     ------------  ---------------------------  -------------------  ------------------
     carve         01_carve_dem.py              data/00_source_dems  data/01_carved
-    fill          02_fill_dem.py               data/01_carved       data/02_breached
+    condition     02_condition_dem.py          data/01_carved       data/02_breached
     route         03_flow_router.py            data/02_breached     data/03_flows
     accumulation  04_flow_accumulation.py      data/03_flows        data/04_accumulation
-    hand          05_hand.py                   data/02_breached +   data/05_hand
+    hand          05_hand.py                   data/01_carved +     data/05_hand
                                                data/03_flows +
                                                data/04_accumulation
     floodplains   06_floodplains.py            (same as hand)       data/06_floodplains
 
-    On this branch the "fill" stage defaults to breach mode (complete
-    breaching, 02_fill_dem.py --method breach), so the conditioned DEMs
-    land in data/02_breached; --method fill still writes data/02_filled.
+    The condition stage breaches depressions by default (complete
+    breaching) and writes data/02_breached; ``02_condition_dem.py
+    --method fill`` fills instead and writes data/02_filled. HAND and
+    floodplain heights are measured on the stage-1 carved DEM, not the
+    conditioned one.
 
 USAGE (inside the ``water`` conda environment)
-    python 00_run_pipeline.py                     # carve -> fill -> route
+    python 00_run_pipeline.py                     # carve -> condition -> route
                                                #   -> accumulation -> hand
                                                #   -> floodplains
     python 00_run_pipeline.py --from route        # resume after an earlier run
-    python 00_run_pipeline.py --only fill route   # just these stages
+    python 00_run_pipeline.py --only condition route   # just these stages
     python 00_run_pipeline.py --skip hand         # everything else
     python 00_run_pipeline.py --upa-min 0.5       # stream threshold, km2,
                                                #   forwarded to route, hand
@@ -48,7 +50,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 
 # Pipeline order.
-STAGES = ("carve", "fill", "route", "accumulation", "hand", "floodplains")
+STAGES = ("carve", "condition", "route", "accumulation", "hand", "floodplains")
 
 
 def stage_commands(args) -> dict[str, list[str]]:
@@ -59,7 +61,7 @@ def stage_commands(args) -> dict[str, list[str]]:
     upa = [] if args.upa_min is None else ["--upa-min", str(args.upa_min)]
     return {
         "carve": [py, str(HERE / "01_carve_dem.py")],
-        "fill": [py, str(HERE / "02_fill_dem.py")],
+        "condition": [py, str(HERE / "02_condition_dem.py")],
         "route": [py, str(HERE / "03_flow_router.py"), *upa],
         "accumulation": [py, str(HERE / "04_flow_accumulation.py")],
         "hand": [py, str(HERE / "05_hand.py"), *upa],

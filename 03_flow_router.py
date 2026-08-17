@@ -8,8 +8,9 @@ Created on Sat Jul 4 2026
 Written with Claude Code (Anthropic).
 
 Pipeline stage 3 (see README.md):
-    reads   data/02_breached/*.tif      (02_fill_dem.py output; this branch
-                                         defaults to its breach mode)
+    reads   data/02_breached/*.tif      (02_condition_dem.py output; its
+                                         --method fill variant lives in
+                                         data/02_filled)
     writes  data/03_flows/              (networks, summary CSV and the
                                          flow_direction_*.tif rasters that
                                          04_flow_accumulation.py reads)
@@ -106,7 +107,7 @@ METHOD
 
     The DEM is assumed hydrologically conditioned by stage 2: pits and
     depressions removed (filled or breached) AND flat ties resolved
-    (02_fill_dem.py bakes tiny fix_flats gradients into float64
+    (02_condition_dem.py bakes tiny fix_flats gradients into float64
     outputs - float32 would collapse them back into ties).
     Routing is not conditioning, so none happens here; the script only
     verifies that the mosaic actually drains and stops with a pointer at
@@ -327,7 +328,7 @@ def check_drainage(mosaic_path):
             f"The DEM does not drain: {stuck} of {n_valid} pixels "
             f"({100.0 * stuck / n_valid:.1f} %) are pits or flat ties with no "
             f"lower neighbour, so flow accumulation dies before any stream "
-            f"reaches the threshold. Re-run stage 2 (02_fill_dem.py: "
+            f"reaches the threshold. Re-run stage 2 (02_condition_dem.py: "
             f"depression removal with flat resolution, float64 output - "
             f"float32 collapses the flat-fix gradients) and route its "
             f"output."

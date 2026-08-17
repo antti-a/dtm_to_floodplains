@@ -10,7 +10,7 @@ Written with Claude Code (Anthropic).
 Pipeline stage 1 (see README.md):
     reads   data/00_source_dems/*.tif
     writes  data/01_carved/carved_<name>.tif
-which is the default input of the next stage (02_fill_dem.py).
+which is the default input of the next stage (02_condition_dem.py).
 
 For every GeoTIFF DEM in the input folder, downloads the matching window
 of the SYKE "Tierumpujen uomakorjaus" correction raster (windowed WCS, never
@@ -86,7 +86,7 @@ SOURCE_DATA_CREDIT = (
 _HERE = Path(__file__).resolve().parent
 DATA_DIR = _HERE / "data"
 INPUT_DIR = DATA_DIR / "00_source_dems"   # source DEM GeoTIFFs to carve
-OUT_DIR = DATA_DIR / "01_carved"          # carved DEMs -> 02_fill_dem.py input
+OUT_DIR = DATA_DIR / "01_carved"          # carved DEMs -> 02_condition_dem.py input
 CULVERT_DIR = DATA_DIR / "culvert_cache"  # cached windowed culvert downloads
 
 

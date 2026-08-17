@@ -106,7 +106,7 @@ def find_dems(dem_args, dem_dir):
     paths = sorted(dem_dir.glob("*.tif")) + sorted(dem_dir.glob("*.tiff"))
     if not paths:
         sys.exit(f"No GeoTIFF found in {dem_dir} (and no --dem given). "
-                 f"Run 02_fill_dem.py first.")
+                 f"Run the preceding pipeline stages first.")
     return paths
 
 

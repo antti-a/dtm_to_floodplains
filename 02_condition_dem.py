@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Hydrologically condition (fill or breach) DEMs.
+Hydrologically condition DEMs: breach (default) or fill depressions.
 
 Created on Fri Jul 3 2026
 @author: Antti Ahokas
@@ -12,40 +12,32 @@ Pipeline stage 2 (see README.md):
     writes  data/02_breached/breached_<name>.tif        (--method breach, default)
             data/02_breached/depth/breach_depth.tif     (breach diagnostic)
         or  data/02_filled/filled_<name>.tif            (--method fill)
-of which the breach output is, on this branch, the default input of stages
-3, 5 and 6; the fill output feeds the same stages through their
-``--inputs-dir`` flags (see the A/B commands below).
+The conditioned tiles are the input of stage 3 (flow routing) and, through
+it, of stages 4-6; they supply *connectivity* only. Stage 6 measures its
+floodplain heights on the stage-1 carved DEM, not on the conditioned one
+(see 06_floodplains.py).
 
-For every GeoTIFF DEM in the input folder, removes the artefacts that
-break downstream flow routing. With ``--method fill``:
+For every GeoTIFF DEM in the input folder, removes the depressions that
+break downstream flow routing, then resolves the flats so that the output
+DEM itself drains. Two methods:
 
-  1. fill pits and depressions    (pysheds ``fill_depressions``, the
-                                   priority-flood of Barnes, Lehman and
-                                   Mulla (2014a); a single-pixel pit is just
-                                   a one-pixel depression, so one pass
-                                   removes both)
-  2. resolve flats                (pysheds ``resolve_flats``, the flat-
-                                   resolution method of Barnes, Lehman and
-                                   Mulla (2014b): a tiny gradient is baked
-                                   into the elevations of filled flats, so
-                                   the output DEM itself drains -- not just
-                                   some side-channel flow-direction raster)
+  breach (default)  complete breaching -- the carving of Soille, Vogt and
+                    Colombo (2003), the "complete breaching" of Lindsay
+                    (2016). A priority flood from the outlets records how it
+                    reached each pixel; when it pops a pixel with no lower
+                    neighbour (an undrainable depression floor) the pixels
+                    along the flood's path back to it are lowered to its
+                    elevation, cutting a level trench through the barrier.
+                    Depression floors keep their elevation; the metres
+                    lowered are written to depth/breach_depth.tif (> 0
+                    exactly where the breach carved) on the mosaic grid.
+  fill              priority-flood filling (pysheds ``fill_depressions``,
+                    Barnes, Lehman and Mulla, 2014a): every depression is
+                    raised to its spill elevation.
 
-With ``--method breach`` (this branch's default), depressions are removed by
-complete breaching (the carving of Soille, Vogt and Colombo (2003); the
-"complete breaching" of Lindsay (2016)): a priority flood from the outlets
-records how it reached each pixel, and when it pops a pixel with no lower
-neighbour -- an undrainable depression floor -- the pixels along the flood's
-path back to that pixel are lowered to its elevation, cutting a level trench
-through the depression's barrier. Filling raises a depression's floor to its
-spill elevation; breaching keeps the floor and lowers the barrier instead.
-That distinction is the mode's purpose: on a filled DEM the floodplain stage
-sees basin floors at spill level and marks whole basins as floodplain, on a
-breached DEM the basins keep their true depth. ``--fill-limit`` blends the
-two: depressions at most that deep (spill minus floor) are filled, deeper
-ones are breached, so centimetre-scale noise pits do not each cut a trench.
-The trench pixels are recorded in ``depth/breach_depth.tif`` (metres
-lowered, > 0 exactly where the breach carved) on the mosaic grid.
+Both are followed by pysheds ``resolve_flats`` (Barnes, Lehman and Mulla,
+2014b), which bakes a tiny gradient into filled depressions and breach
+trenches alike so the written DEM drains everywhere.
 
 The inputs are mosaicked *virtually* with ``gdalbuildvrt`` and conditioned as
 one surface, so depressions spanning tile edges are handled correctly
@@ -59,15 +51,19 @@ flat-resolution gradient that makes those ties drain is far smaller than
 float32 can represent at these elevations, and a float32 output silently
 collapses the flats right back -- downstream flow routing then dies on a
 DEM that merely looks conditioned. float64 keeps the gradients, and both
-modes verify that the written mosaic actually drains.
+methods verify that the written mosaic actually drains.
 
 Notes:
   * Breach trenches are carved level and rely on ``resolve_flats`` for
     their drainage gradient, exactly as filled depressions do (a per-step
     carve gradient would gouge the hydro-flattened lakes of the source
     DEM, polluting the breach-depth diagnostic).
+  * Breaching lowers the DEM along its trenches -- including river reaches
+    downstream of a depression whose floor lies below the river surface
+    (typically 0.2-1 m on hydro-flattened rivers). That is why floodplain
+    heights are not measured on the conditioned DEM.
   * Depressions draining across the mosaic's outer edge condition to the
-    edge elevation ("outlets at edge"). The modes treat interior nodata
+    edge elevation ("outlets at edge"). The methods treat interior nodata
     holes differently: the fill is seeded from the outermost valid pixel
     of each row and column, so a depression that drains only into an
     interior nodata hole fills up to the hole's surrounding rim; the
@@ -76,24 +72,10 @@ Notes:
     stage's drainage check and stage 3's treat nodata (as an outlet).
   * Pixels that are nodata in an input stay nodata in its output.
   * All inputs must share CRS, pixel size and grid alignment (validated).
-  * On this branch the breach pipeline is the default: a no-argument run
-    breaches (fill limit ``FILL_LIMIT``), and stages 3, 5 and 6 read
-    data/02_breached unless told otherwise. The fill variant stays
-    available for A/B comparison, run manually into parallel folders:
-
-        python 02_fill_dem.py --method fill
-        python 03_flow_router.py --inputs-dir data/02_filled \\
-            --outputs-dir data/03_flows_fill
-        python 04_flow_accumulation.py --inputs-dir data/03_flows_fill \\
-            --outputs-dir data/04_accumulation_fill
-        python 05_hand.py --inputs-dir data/02_filled \\
-            --outputs-dir data/05_hand_fill \\
-            --d8 data/03_flows_fill/flow_direction_d8.tif \\
-            --uparea data/04_accumulation_fill/flow_accumulation_d8.tif
-        python 06_floodplains.py --inputs-dir data/02_filled \\
-            --outputs-dir data/06_floodplains_fill \\
-            --d8 data/03_flows_fill/flow_direction_d8.tif \\
-            --uparea data/04_accumulation_fill/flow_accumulation_d8.tif
+  * The two methods write to separate folders, so both can be kept; the
+    downstream stages read data/02_breached by default and take
+    ``--inputs-dir data/02_filled`` (stage 3) or ``--d8``/``--uparea``
+    (stages 5-6) to run on the filled variant instead.
 
 References:
   * Barnes, R., Lehman, C. and Mulla, D. (2014a) 'Priority-flood: an
@@ -114,8 +96,8 @@ References:
 Run inside the ``water`` conda environment:
 
     conda activate water
-    python 02_fill_dem.py                 (breach, this branch's default)
-    python 02_fill_dem.py --method fill
+    python 02_condition_dem.py                 (breach, the default)
+    python 02_condition_dem.py --method fill
 """
 
 from __future__ import annotations
@@ -133,7 +115,7 @@ import rasterio
 from numba import njit
 from rasterio.windows import from_bounds
 
-logger = logging.getLogger("fill_dem")
+logger = logging.getLogger("condition_dem")
 
 # --------------------------------------------------------------------------- #
 # Defaults / constants
@@ -155,18 +137,13 @@ FLAT_EPS = 1e-8
 FLAT_MAX_ITER = 100_000
 
 # The most resolve_flats can raise any pixel (see the comment above): the
-# breach mode's crop-back guard allows raising up to this plus the fill
-# limit, and anything more means the breach itself raised terrain -- a bug.
+# breach method's crop-back guard allows raising up to this, and anything
+# more means the breach itself raised terrain -- a bug.
 MAX_FLAT_INFLATION = 3 * FLAT_EPS * FLAT_MAX_ITER   # 3 mm
 
-# Depression-removal method for a no-argument run; the CLI flag --method
-# overrides. On this branch the breach pipeline is the default.
+# Depression-removal method for a no-argument run ("breach" or "fill");
+# the CLI flag --method overrides.
 METHOD = "breach"
-
-# Breach mode: depressions at most this deep (spill minus floor, metres)
-# are filled instead of breached, so noise pits do not each cut a trench.
-# 0 breaches every depression; the CLI flag --fill-limit overrides.
-FILL_LIMIT = 0.0
 
 # Used when the input carries stage-1 provenance tags (dem_source_tiles).
 SOURCE_DATA_CREDIT = (
@@ -187,11 +164,11 @@ SOURCE_DATA_CREDIT_PRESUMED = (
 _HERE = Path(__file__).resolve().parent
 DATA_DIR = _HERE / "data"
 INPUT_DIR = DATA_DIR / "01_carved"    # carved DEMs (01_carve_dem.py output)
-OUT_DIR = DATA_DIR / "02_filled"      # filled DEMs -> 03_flow_router.py input
-WORK_DIR = OUT_DIR / "_work"          # mosaic + fill intermediates
-OUT_DIR_BREACH = DATA_DIR / "02_breached"   # breached DEMs (--method breach);
-                                            # depth/ + _work/ subfolders stay
-                                            # out of the *.tif tile globs
+OUT_DIRS = {                          # per method; the default one is the
+    "breach": DATA_DIR / "02_breached",   # input of 03_flow_router.py.
+    "fill": DATA_DIR / "02_filled",       # depth/ and _work/ subfolders stay
+}                                     # out of the *.tif tile globs
+DEPTH_NAME = Path("depth") / "breach_depth.tif"   # breach diagnostic
 
 
 # --------------------------------------------------------------------------- #
@@ -332,7 +309,7 @@ def count_undrainable(dem_tif: Path, nodata: float = NODATA) -> tuple[int, int]:
     return int(stuck.sum()), int(valid.sum())
 
 
-def fill(mosaic_tif: Path, work_dir: Path = WORK_DIR) -> Path:
+def fill(mosaic_tif: Path, work_dir: Path) -> Path:
     """Fill pits + depressions and resolve flats; return the filled mosaic.
 
     ``fill_depressions`` is a priority-flood fill (Barnes, Lehman and
@@ -428,21 +405,19 @@ def _heap_pop(heap_z, heap_i, n):
 
 
 @njit(cache=True)
-def _breach_kernel(z, depth, nodata, fill_limit):
+def _breach_kernel(z, depth, nodata):
     """Breach the depressions of ``z`` in place; see :func:`breach`.
 
     A priority flood from the outlets (grid-edge and nodata-adjacent
     pixels) pops pixels lowest-first and records for each pixel the
     neighbour it was reached from. A popped pixel with no strictly lower
     neighbour is an undrainable depression floor, and the flood reached
-    it over the depression's lowest saddle, so the highest pixel on its
-    chain of backlinks is the spill elevation. If spill minus floor is
-    at most ``fill_limit`` the depression is left for the fill pass;
-    otherwise the chain's pixels are lowered to the floor elevation,
-    carving a level trench through the barrier (Soille, Vogt and
-    Colombo, 2003; the "complete breaching" of Lindsay, 2016). Metres
-    lowered accumulate into the flat float32 array ``depth``. Returns
-    the (breached, left-for-filling) depression counts.
+    it over the depression's lowest saddle, so lowering the pixels along
+    its chain of backlinks to the floor elevation carves a level trench
+    through the barrier (Soille, Vogt and Colombo, 2003; the "complete
+    breaching" of Lindsay, 2016). Metres lowered accumulate into the
+    flat float32 array ``depth``. Returns the number of depressions
+    breached.
     """
     nrow, ncol = z.shape
     zf = z.reshape(-1)
@@ -477,7 +452,6 @@ def _breach_kernel(z, depth, nodata, fill_limit):
                 heap_n = _heap_push(heap_z, heap_i, heap_n, zf[i], i)
 
     n_breached = 0
-    n_shallow = 0
     while heap_n > 0:
         zc, i, heap_n = _heap_pop(heap_z, heap_i, heap_n)
         r = i // ncol
@@ -503,47 +477,35 @@ def _breach_kernel(z, depth, nodata, fill_limit):
                         heap_n = _heap_push(heap_z, heap_i, heap_n, zf[j], j)
         if has_lower or backlink[i] == -1:
             continue
-        # An undrainable depression floor: measure its depth, then breach
-        # or leave for the fill. Backlink chains hold only already-popped
-        # pixels, so carving them never invalidates a pending heap key.
-        spill = zc
+        # An undrainable depression floor: lower the flood's path back to
+        # it down to its elevation. Backlink chains hold only already-
+        # popped pixels, so carving them never invalidates a pending heap
+        # key. A floor whose parent already sits at its level is a flat
+        # tie -- an equal neighbour leads out -- and carves nothing.
         j = backlink[i]
-        while j != -1 and zf[j] > zc:
-            if zf[j] > spill:
-                spill = zf[j]
-            j = backlink[j]
-        if spill == zc:
-            continue          # flat tie: an equal neighbour already leads out
-        if spill - zc <= fill_limit:
-            n_shallow += 1
-            continue
-        n_breached += 1
-        j = backlink[i]
+        if zf[j] > zc:
+            n_breached += 1
         while j != -1 and zf[j] > zc:
             depth[j] += zf[j] - zc
             zf[j] = zc
             j = backlink[j]
-    return n_breached, n_shallow
+    return n_breached
 
 
 def breach(
     mosaic_tif: Path,
     work_dir: Path,
     depth_out: Path | None = None,
-    fill_limit: float = FILL_LIMIT,
 ) -> Path:
-    """Breach depressions, fill shallow ones, resolve flats; return the mosaic.
+    """Breach depressions and resolve flats; return the breached mosaic.
 
     Complete breaching (see :func:`_breach_kernel`) carves a level trench
-    from each depression floor deeper than ``fill_limit`` out through its
-    barrier. pysheds ``fill_depressions`` then fills the shallow
-    depressions the kernel skipped -- each raised by at most
-    ``fill_limit``, its measured spill minus floor -- and
-    ``resolve_flats`` gives the level trenches, like any other flat,
-    their drainage gradient. The metres lowered are written to
-    ``depth_out`` before those passes, so that raster is > 0 exactly
-    where the breach carved. The float64 and drainage-check reasoning of
-    :func:`fill` applies unchanged to the written mosaic.
+    from each depression floor out through its barrier; ``resolve_flats``
+    then gives the level trenches, like any other flat, their drainage
+    gradient. The metres lowered are written to ``depth_out`` before that
+    pass, so that raster is > 0 exactly where the breach carved. The
+    float64 and drainage-check reasoning of :func:`fill` applies
+    unchanged to the written mosaic.
     """
     from pysheds.grid import Grid
 
@@ -561,16 +523,13 @@ def breach(
     nodata_mask = (z == NODATA) | ~np.isfinite(z)
     z[nodata_mask] = NODATA
 
-    logger.info("numba complete breaching (fill limit %g m) ...", fill_limit)
+    logger.info("numba complete breaching ...")
     depth = np.zeros(z.size, dtype=np.float32)
-    n_breached, n_shallow = _breach_kernel(z, depth, NODATA, fill_limit)
+    n_breached = _breach_kernel(z, depth, NODATA)
     depth = depth.reshape(z.shape)
     carved = int(np.count_nonzero(depth > 0))
-    logger.info(
-        "Breached %d depression(s), carving %d pixel(s); left %d shallow "
-        "depression(s) (<= %g m) for the fill",
-        n_breached, carved, n_shallow, fill_limit,
-    )
+    logger.info("Breached %d depression(s), carving %d pixel(s)",
+                n_breached, carved)
 
     if depth_out is not None:
         depth[nodata_mask] = NODATA
@@ -581,10 +540,10 @@ def breach(
                       "breaching; > 0 exactly on carved pixels",
                 breach_method=(
                     "numba complete breaching (Lindsay, 2016; Soille, Vogt "
-                    f"and Colombo, 2003), fill limit {fill_limit:g} m, on "
-                    "the virtual mosaic of all input tiles"
+                    "and Colombo, 2003) on the virtual mosaic of all input "
+                    "tiles"
                 ),
-                generated_by="02_fill_dem.py",
+                generated_by="02_condition_dem.py",
             ),
         )
     del depth
@@ -594,9 +553,6 @@ def breach(
 
     grid = Grid.from_raster(str(raw_tif))
     dem = grid.read_raster(str(raw_tif))
-    if fill_limit > 0:
-        logger.info("pysheds fill_depressions (shallow depressions) ...")
-        dem = grid.fill_depressions(dem)
     logger.info("pysheds resolve_flats (eps=%g, max_iter=%d) ...",
                 FLAT_EPS, FLAT_MAX_ITER)
     inflated = grid.resolve_flats(dem, eps=FLAT_EPS, max_iter=FLAT_MAX_ITER)
@@ -670,18 +626,17 @@ def write_dem(
 def crop_back(
     cond_tif: Path,
     dem_path: Path,
-    out_dir: Path = OUT_DIR,
+    out_dir: Path,
     nodata: float = NODATA,
     method: str = METHOD,
-    fill_limit: float = FILL_LIMIT,
 ) -> Path:
-    """Write ``out_dir/<filled_|breached_><name>.tif`` on ``dem_path``'s grid.
+    """Write ``out_dir/<breached_|filled_><name>.tif`` on ``dem_path``'s grid.
 
     Reads the input's window out of the conditioned mosaic (same lattice
     by construction, so this is a pure crop), re-applies the input's
-    nodata mask, and logs how much was filled or breached as a QC
+    nodata mask, and logs how much was breached or filled as a QC
     summary. The summary compares against the post-``resolve_flats``
-    surface, so in breach mode its depths can differ from the exact
+    surface, so for the breach its depths can differ from the exact
     breach-depth raster by up to ``MAX_FLAT_INFLATION``.
     """
     dem_path = Path(dem_path)
@@ -721,23 +676,22 @@ def crop_back(
             float(diff.max()) if diff.size else 0.0,
         )
     else:
-        allowed = fill_limit + MAX_FLAT_INFLATION + 1e-3
+        allowed = MAX_FLAT_INFLATION + 1e-3
         if diff.size and diff.max() > allowed:
             raise RuntimeError(
                 f"{dem_path.name}: breach raised pixels by up to "
-                f"{diff.max():.3f} m (allowed {allowed:.3f} m = fill limit "
-                f"+ flat inflation)"
+                f"{diff.max():.3f} m (allowed {allowed:.3f} m = flat "
+                f"inflation)"
             )
         lowered = diff < 0
         n_low = int(np.count_nonzero(lowered))
         logger.info(
             "%s: %d of %d valid pixels breached (%.2f %%), max breach depth "
-            "%.3f m, mean %.3f m; %d pixels filled (shallow depressions)",
+            "%.3f m, mean %.3f m",
             dem_path.name, n_low, int(valid.sum()),
             100.0 * n_low / max(1, valid.sum()),
             float(-diff.min()) if diff.size else 0.0,
             float(-diff[lowered].mean()) if n_low else 0.0,
-            int(np.count_nonzero(diff > MAX_FLAT_INFLATION)),
         )
 
     forwarded = {k: src_tags[k] for k in ("dem_source_tiles", "dem_carve")
@@ -757,12 +711,9 @@ def crop_back(
     else:
         prefix = "breached_"
         title = "Hydrologically conditioned (depression-breached) DEM"
-        shallow = (f"pysheds fill_depressions (Barnes et al. 2014) for "
-                   f"depressions at most {fill_limit:g} m deep + "
-                   if fill_limit > 0 else "")
         how = ("numba complete breaching (Lindsay, 2016; Soille, Vogt and "
-               f"Colombo, 2003) + {shallow}pysheds resolve_flats (Barnes "
-               f"et al. 2014, eps={FLAT_EPS:g}, max_iter={FLAT_MAX_ITER})")
+               "Colombo, 2003) + pysheds resolve_flats (Barnes et al. 2014, "
+               f"eps={FLAT_EPS:g}, max_iter={FLAT_MAX_ITER})")
         dem_fill = "numba_complete_breach+pysheds_resolve_flats"
     return write_dem(
         Path(out_dir) / f"{prefix}{dem_path.stem}.tif",
@@ -776,7 +727,7 @@ def crop_back(
             source_data_credit=(SOURCE_DATA_CREDIT
                                 if "dem_source_tiles" in forwarded
                                 else SOURCE_DATA_CREDIT_PRESUMED),
-            generated_by="02_fill_dem.py",
+            generated_by="02_condition_dem.py",
             **forwarded,
         ),
     )
@@ -785,24 +736,23 @@ def crop_back(
 # --------------------------------------------------------------------------- #
 # Orchestrator
 # --------------------------------------------------------------------------- #
-def fill_all(
+def condition_all(
     input_dir: Path = INPUT_DIR,
     out_dir: Path | None = None,
     work_dir: Path | None = None,
     keep_intermediate: bool = KEEP_INTERMEDIATE,
     method: str = METHOD,
-    fill_limit: float = FILL_LIMIT,
 ) -> list[Path]:
     """Condition every ``*.tif`` in ``input_dir``; return the written paths.
 
-    ``out_dir`` defaults per method (``OUT_DIR`` / ``OUT_DIR_BREACH``) and
-    ``work_dir`` to ``out_dir/_work``, so the two methods never overwrite
-    each other's outputs.
+    ``out_dir`` defaults per method (``OUT_DIRS``) and ``work_dir`` to
+    ``out_dir/_work``, so the two methods never overwrite each other's
+    outputs.
     """
-    if method not in ("fill", "breach"):
+    if method not in OUT_DIRS:
         raise ValueError(f"unknown method {method!r}")
     if out_dir is None:
-        out_dir = OUT_DIR if method == "fill" else OUT_DIR_BREACH
+        out_dir = OUT_DIRS[method]
     out_dir = Path(out_dir)
     if work_dir is None:
         work_dir = out_dir / "_work"
@@ -821,12 +771,9 @@ def fill_all(
     if method == "fill":
         cond_tif = fill(mosaic_tif, work_dir)
     else:
-        cond_tif = breach(mosaic_tif, work_dir,
-                          depth_out=out_dir / "depth" / "breach_depth.tif",
-                          fill_limit=fill_limit)
+        cond_tif = breach(mosaic_tif, work_dir, depth_out=out_dir / DEPTH_NAME)
 
-    written = [crop_back(cond_tif, d, out_dir, method=method,
-                         fill_limit=fill_limit) for d in dems]
+    written = [crop_back(cond_tif, d, out_dir, method=method) for d in dems]
 
     if not keep_intermediate:
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -850,21 +797,14 @@ if __name__ == "__main__":
              "elevation (writes data/02_breached); fill = pysheds "
              "priority-flood fill (writes data/02_filled)"
     )
-    parser.add_argument(
-        "--fill-limit", type=float, default=FILL_LIMIT, metavar="M",
-        help="breach mode only: depressions at most this deep (metres) are "
-             "filled instead of breached; 0 breaches every depression, "
-             "0.1-0.2 is a reasonable starting range (default %(default)g)"
-    )
     args = parser.parse_args()
 
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
-    written = fill_all(method=args.method, fill_limit=args.fill_limit)
-    print("\nFilled DEM(s):" if args.method == "fill" else "\nBreached DEM(s):")
+    written = condition_all(method=args.method)
+    print("\nBreached DEM(s):" if args.method == "breach" else "\nFilled DEM(s):")
     for p in written:
         print(f"  {p}")
     if args.method == "breach":
-        print(f"\nBreach depth raster:\n"
-              f"  {OUT_DIR_BREACH / 'depth' / 'breach_depth.tif'}")
+        print(f"\nBreach depth raster:\n  {OUT_DIRS['breach'] / DEPTH_NAME}")

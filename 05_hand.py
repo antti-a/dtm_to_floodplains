@@ -6,7 +6,8 @@ Created on Wed Jul 8 2026
 Written with Claude Code (Anthropic).
 
 Pipeline stage 5, optional (see README.md):
-    reads   data/02_breached/*.tif                          (02_fill_dem.py)
+    reads   data/01_carved/*.tif                            (01_carve_dem.py; the
+                                                             elevations)
             data/03_flows/flow_direction_d8.tif             (03_flow_router.py)
             data/04_accumulation/flow_accumulation_d8.tif   (04_flow_accumulation.py)
     writes  data/05_hand/hand.tif
@@ -14,14 +15,24 @@ Pipeline stage 5, optional (see README.md):
 HAND (Nobre et al., 2016) is the vertical distance between a pixel and the
 stream pixel it drains to along the D8 flow path: the local flood-relevant
 "height above the river". This stage recomputes nothing the pipeline already
-produced - the conditioned DEM, the D8 flow directions and the D8 flow
+produced - the stage-1 carved DEM, the D8 flow directions and the D8 flow
 accumulation are read as-is; pyflwdir is used only to turn the existing D8
 raster into a flow graph (one downstream index per pixel plus a down-to-
 upstream pixel ordering).
 
+The elevations come from the stage-1 carved DEM, *not* from the conditioned
+DEM the flow directions were routed on. Conditioning exists to make every
+pixel drain and distorts heights in the process: filling raises depression
+floors to their spill level and breaching lowers the river surface along
+its trenches. Measured on the carved DEM, the height above the drain is the
+real one, and the D8 tree - which only decides which stream pixel a pixel
+drains to - is used for what it is good at. The carved tiles share the
+conditioned tiles' grid (stage 2 crops back onto each input tile), so the
+D8 raster lines up pixel for pixel.
+
 How it works
 ------------
-1. The conditioned DEM tiles are mosaicked in memory (tile validation,
+1. The stage-1 carved DEM tiles are mosaicked in memory (tile validation,
    mosaicking and raster loading come from the companion module
    pipeline_io.py; no mosaic file is written).
 2. ``flow_direction_d8.tif`` is remapped to pyflwdir's uint8 convention
@@ -58,7 +69,7 @@ Spatial reference
 
 Credits
 -------
-* Source data: conditioned DEM and D8 rasters from the earlier pipeline stages,
+* Source data: carved DEM and D8 rasters from the earlier pipeline stages,
   derived from a 2 m digital elevation model in EPSG:3067 / N2000 - presumed
   to be the National Land Survey of Finland (Maanmittauslaitos) 2 m
   elevation model (KM2), licensed CC BY 4.0. Edit
@@ -84,10 +95,12 @@ from __future__ import annotations
 #                 no-argument run; any CLI flag overrides them
 # ===========================================================================
 
-INPUTS_DIR = "data/02_breached"     # conditioned DEM tiles; relative paths
-OUTPUTS_DIR = "data/05_hand"        # are resolved next to this script
+INPUTS_DIR = "data/01_carved"       # DEM tiles for the ELEVATIONS: the
+                                    # stage-1 carved DEM, not the conditioned
+                                    # one (see the module docstring)
+OUTPUTS_DIR = "data/05_hand"        # relative paths resolve next to this script
 DEM_FILES = None        # None = mosaic all *.tif in INPUTS_DIR, or a list,
-                        # e.g. ["breached_carved_L4142E.tif"]
+                        # e.g. ["carved_L4142E.tif"]
 
 D8_RASTER = "data/03_flows/flow_direction_d8.tif"
                         # D8 flow directions (03_flow_router.py output)
@@ -106,6 +119,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import rasterio
 from numba import njit
 
 from pipeline_io import (
@@ -165,7 +179,7 @@ def _hand_kernel(idxs_ds, seq, drain, elevtn):
 
 
 def compute_hand(flw, drain, elevtn, nodata=NODATA):
-    """Return HAND [m] on the conditioned DEM; nodata kept where the DEM has it."""
+    """Return HAND [m] on the carved DEM; nodata kept where the DEM has it."""
     hand = _hand_kernel(
         flw.idxs_ds, flw.idxs_seq, drain.ravel(), elevtn.ravel()
     ).reshape(flw.shape)
@@ -181,12 +195,16 @@ def main(argv=None) -> int:
     # The USER SETTINGS block at the top of the script feeds the argparse
     # defaults directly, so there is exactly one source of truth per value.
     ap = argparse.ArgumentParser(
-        description="Height above nearest drain (HAND) from the pipeline's "
-                    "conditioned DEM, D8 flow directions and D8 flow accumulation.")
+        description="Height above nearest drain (HAND): elevations from the "
+                    "stage-1 carved DEM, flow paths from the pipeline's D8 flow "
+                    "directions and D8 flow accumulation.")
     ap.add_argument("--dem", nargs="+", default=None, metavar="TIF",
-                    help="conditioned DEM tiles (default: all in --inputs-dir)")
+                    help="DEM tiles supplying the elevations (default: all in "
+                         "--inputs-dir)")
     ap.add_argument("--inputs-dir", type=Path,
-                    default=resolve_near(INPUTS_DIR, HERE))
+                    default=resolve_near(INPUTS_DIR, HERE),
+                    help="folder of the elevation DEM tiles (default: the "
+                         "stage-1 carved DEM, data/01_carved)")
     ap.add_argument("--outputs-dir", type=Path,
                     default=resolve_near(OUTPUTS_DIR, HERE))
     ap.add_argument("--d8", type=Path,
@@ -218,6 +236,12 @@ def main(argv=None) -> int:
     d8u8, routing_alg = load_d8(args.d8, transform, shape, crs)
     flw = build_flwdir(d8u8, transform)
     del d8u8
+    # The elevation tiles are pre-conditioning, so the conditioning method
+    # (dem_fill) travels with the D8 raster instead; forward it from there.
+    with rasterio.open(args.d8) as src:
+        d8_fill = src.tags().get("dem_fill")
+    if d8_fill and "dem_fill" not in forwarded:
+        forwarded["dem_fill"] = d8_fill
 
     uparea = load_uparea(args.uparea, transform, shape, crs, routing_alg)
     drain = uparea >= np.float32(args.upa_min)
@@ -249,6 +273,10 @@ def main(argv=None) -> int:
             units="m above the nearest drain pixel along the D8 flow path",
             deviation=HAND_DEVIATION,
             source_dem_tiles=", ".join(p.name for p in dem_paths),
+            elevation_source="elevations from the DEM tiles named in "
+                             "source_dem_tiles (stage-1 carved, not the "
+                             "conditioned DEM); flow paths from the D8 "
+                             "raster routed on the conditioned DEM (dem_fill)",
             source_flow_direction_raster=args.d8.name,
             source_flow_accumulation_raster=args.uparea.name,
             source_data_credit=(SOURCE_DATA_CREDIT_KNOWN
